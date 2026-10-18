@@ -7,7 +7,8 @@ import atexit
 import threading as _th
 
 # ---- Лог на каждый запуск: C:\numbinder\crashlogs\run_<дата>_pid<N>.txt ----
-PATH_CRASH_DIR = r"C:\numbinder\crashlogs"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # папка, в которой лежит numbinder.pyw
+PATH_CRASH_DIR = os.path.join(BASE_DIR, "crashlogs")
 try:
     os.makedirs(PATH_CRASH_DIR, exist_ok=True)
 except Exception:
@@ -32,7 +33,7 @@ _th.excepthook = _thread_hook
 # ================= АБСОЛЮТНЫЙ КРАШ-РЕПОРТЕР =================
 def _crash_lang():
     try:
-        with open(r"C:\numbinder\config.json", "r", encoding="utf-8") as _f:
+        with open(os.path.join(BASE_DIR, "config.json"), "r", encoding="utf-8") as _f:
             return json.load(_f).get("AppSettings", {}).get("lang", "ru")
     except Exception:
         return "ru"
@@ -98,7 +99,7 @@ try:
         sys.exit(0)
 
     # ================= НАСТРОЙКИ =================
-    VERSION = "v1.29.0"
+    VERSION = "v1.31.1"
     VOLUME_LIMIT = 0.65 
     macro_enabled = True 
     active_keys = {}
@@ -109,7 +110,7 @@ try:
     vol_thread = None
     secret_buffer = ""
 
-    PATH_DIR = r"C:\numbinder"
+    PATH_DIR = BASE_DIR
     WIN_W, WIN_H = 444, 704   # размер окна фиксированный
     script_path = os.path.abspath(__file__)
     # Все картинки и звук лежат в C:\numbinder\assets\. Старое расположение (корень папки) тоже поддерживается.
@@ -181,11 +182,12 @@ try:
         "_version": VERSION,
         "AppSettings": {"show_labels": True, "autostart": False, "dev_unlocked": False, "dev_enabled": False, "osd_scale": 1.0, "osd_x": 50, "osd_y": 5, "action_sound": True, "action_sound_volume": 100, "osd_text_color": "#cccccc", "osd_border_color": "#c7c7c7", "osd_bg_color": "#202020", "osd_glow_color": "#ebebeb", "lang": "ru"},
         "DevSettings": {
-            "scale": 1.11, "base_size": 81, "spacing": 79, 
+            "scale": 1.07, "base_size": 100, "spacing": 92, 
             "color_active": "#1db954", "color_inactive": "#3a3a3a",
-            "text_x": 29, "text_y": 21, "text_size": 12,
-            "text_x_nlk": 29, "text_y_nlk": 21, "text_size_nlk": 12,
-            "text_x_ent": 29, "text_y_ent": 21, "text_size_ent": 12,
+            "text_x": 32, "text_y": 23, "text_size": 12,
+            "text_x_nlk": 28, "text_y_nlk": 29, "text_size_nlk": 8,
+            "text_x_ent": 33, "text_y_ent": 29, "text_size_ent": 12,
+            "layout_defaults_rev": 2,
             "hover_scale": 1.3, "hover_y": 13, "hover_overlay": 20, "color_glow": "#1db954",
             "win_w": 444, "win_h": 704, "win_pad": 12, "hover_blur": 15,
             
@@ -244,7 +246,7 @@ try:
         try:
             _runlog("TK CRASH:\n" + tb_text)
         except: pass
-        ctypes.windll.user32.MessageBoxW(0, tr("Сбой анимации или Tkinter!\n\nОшибка: {}\n\nСмотри папку C:\\numbinder\\crashlogs\\").format(val), "Tkinter Crash", 0x10 | 0x40000)
+        ctypes.windll.user32.MessageBoxW(0, tr("Сбой анимации или Tkinter!\n\nОшибка: {}\n\nСмотри папку crashlogs").format(val), "Tkinter Crash", 0x10 | 0x40000)
         sys.exit(1)
     ui_root.report_callback_exception = tk_crash_handler
 
@@ -271,6 +273,18 @@ try:
         if k not in MACRO_CONFIG["AppSettings"]: MACRO_CONFIG["AppSettings"][k] = v
     for k, v in DEFAULT_CONFIG["DevSettings"].items():
         if k not in MACRO_CONFIG["DevSettings"]: MACRO_CONFIG["DevSettings"][k] = v
+    # Новые дефолтные значения сетки/текста применяются один раз к уже существующему config.json
+    _LAYOUT_KEYS = ("scale", "base_size", "spacing", "text_x", "text_y", "text_size",
+                    "text_x_nlk", "text_y_nlk", "text_size_nlk", "text_x_ent", "text_y_ent", "text_size_ent")
+    if MACRO_CONFIG["DevSettings"].get("layout_defaults_rev", 0) < DEFAULT_CONFIG["DevSettings"]["layout_defaults_rev"]:
+        for _k in _LAYOUT_KEYS:
+            MACRO_CONFIG["DevSettings"][_k] = DEFAULT_CONFIG["DevSettings"][_k]
+        MACRO_CONFIG["DevSettings"]["layout_defaults_rev"] = DEFAULT_CONFIG["DevSettings"]["layout_defaults_rev"]
+        try:
+            with open(PATH_CONFIG, "w", encoding="utf-8") as _f:
+                json.dump(MACRO_CONFIG, _f, indent=4, ensure_ascii=False)
+        except Exception:
+            pass
 
     _EN_MAP = {"💡 ОВЕРЛЕЙ\n\nКороткое нажатие — Вкл/Выкл\nУдержание (Hold) — Открыть студию настройки": "💡 OVERLAY\n\nShort press — On/Off\nHold — Open the overlay studio", 'Имя': 'Name', 'Нет': 'None', 'Фон': 'Background', 'Круг': 'Circle', 'Цвет': 'Color', 'Цель': 'Target', 'Выбор': 'Choose', 'Крест': 'Cross', 'Назад': 'Back', 'Текст': 'Text', 'Точка': 'Dot', 'Выход': 'Exit', 'Высота': 'Height', 'ГОТОВО': 'DONE', 'Отмена': 'Cancel', 'Патчер': 'Patcher', 'Прицел': 'Crosshair', 'Тёмный': 'Dark', 'Ширина': 'Width', 'Закрыть': 'Close', 'Обводка': 'Outline', 'Прицелы': 'Crosshairs', 'Пёстрый': 'Busy', 'Светлый': 'Light', 'Удалить': 'Delete', 'Шаг (%)': 'Step (%)', 'Вкл/Выкл': 'On/Off', 'Загрузить': 'Load', 'Картинка:': 'Image:', 'Позиция X': 'Position X', 'Позиция Y': 'Position Y', 'Пропорции': 'Aspect ratio', 'Сохранить': 'Save', 'Цвет Glow': 'Glow Color', 'Настройки': 'Settings', '3. Обводка': '3. Outline', 'Выбрать...': 'Browse...', 'Кнопка ВКЛ': 'Button ON', 'Наложение:': 'Blend:', 'Не выбрано': 'Not selected', 'ПРЕВЬЮ 65%': 'PREVIEW 65%', 'Т-образный': 'T-shape', 'Тихая зона': 'Quiet zone', 'Цвет шапки': 'Header color', 'Вся система': 'Whole system', 'Кнопка ВЫКЛ': 'Button OFF', 'Код прицела': 'Crosshair code', 'Оверлей ВКЛ': 'Overlay ON', 'Прицел ВЫКЛ': 'Crosshair OFF', 'Сглаживание': 'Smoothing', 'ТЕКСТ ENTER': 'ENTER TEXT', 'ТЕКСТ ОБЩИЙ': 'GENERAL TEXT', 'Тип прицела': 'Crosshair type', 'Громкая зона': 'Loud zone', 'Новый макрос': 'New macro', 'Порог до (%)': 'Threshold up to (%)', 'Средняя зона': 'Medium zone', 'Цвет обводки': 'Outline color', 'Цвет прицела': 'Crosshair color', 'Выбор клавиши': 'Choose key', 'Задержка (мс)': 'Delay (ms)', 'Интерактивное': 'Interactive', 'Ошибка записи': 'Write error', 'Позиция X (%)': 'Position X (%)', 'Позиция Y (%)': 'Position Y (%)', 'Применить код': 'Apply code', 'Режим прицела': 'Crosshair mode', 'СОХРАНИТЬ ВСЁ': 'SAVE ALL', 'ТЕКСТ NUMLOCK': 'NUMLOCK TEXT', 'Путь до иконки': 'Icon path', 'Путь до файла.': 'File path.', 'Размер (Scale)': 'Size (Scale)', 'СТУДИЯ ОВЕРЛЕЯ': 'OVERLAY STUDIO', 'Сбросить цвета': 'Reset colors', 'Студия Оверлея': 'Overlay Studio', 'Точка в центре': 'Center dot', 'ГЕОМЕТРИЯ СЕТКИ': 'GRID GEOMETRY', 'Громкость звука': 'Sound volume', 'Названия кнопок': 'Button labels', 'Размытие (Blur)': 'Blur', 'Свечение текста': 'Text glow', 'Скопировать код': 'Copy code', 'Включить обводку': 'Enable outline', 'Длина линий (px)': 'Line length (px)', 'Прицел не найден': 'Crosshair not found', 'Прозрачность (%)': 'Opacity (%)', 'Цвет поверхности': 'Surface color', 'Комбинация клавиш': 'Key combination', 'Лимит громкости %': 'Volume limit %', 'Размер точки (px)': 'Dot size (px)', 'Уведомления (OSD)': 'Notifications (OSD)', 'Угол поворота (°)': 'Rotation angle (°)', 'Цвета уведомлений': 'Notification colors', 'ЭФФЕКТЫ НАВЕДЕНИЯ': 'HOVER EFFECTS', 'Попытка запуска...': 'Launching...', 'Толщина линий (px)': 'Line thickness (px)', 'Хромакей (Magenta)': 'Chroma key (Magenta)', 'Язык переключения.': 'Language to switch to.', 'Активное приложение': 'Active application', 'Выбрать сохранённый': 'Choose saved', 'Зазор / отступ (px)': 'Gap / offset (px)', 'Конструктор прицела': 'Crosshair designer', 'Обычное (Black Key)': 'Normal (Black Key)', 'Прицел: список пуст': 'Crosshair: list is empty', 'Резкие края (Alpha)': 'Hard edges (Alpha)', 'Светлое (White Key)': 'Light (White Key)', 'Сохранённые прицелы': 'Saved crosshairs', '1. Форма и геометрия': '1. Shape and geometry', 'Введите имя прицела.': 'Enter a crosshair name.', 'Глобальные настройки': 'Global settings', 'Прозрачность окна, %': 'Window opacity, %', 'Толщина обводки (px)': 'Outline thickness (px)', 'Оверлей: Нет картинки': 'Overlay: No image', '2. Цвет и прозрачность': '2. Color and opacity', 'Процесс (поле Process)': 'Process (Process field)', 'Долгое удержание (сек).': 'Long hold (sec).', 'Запуск вместе с Windows': 'Start with Windows', 'Запуск от имени Админа.': 'Run as Administrator.', 'Такой прицел не найден.': 'That crosshair was not found.', 'Выберите язык из списка.': 'Choose a language from the list.', 'Какой прицел показывать.': 'Which crosshair to show.', 'Настройки звука процесса': 'Process sound settings', 'Применить патч из буфера': 'Apply patch from clipboard', 'Прозрачность обводки (%)': 'Outline opacity (%)', 'DEV режим (горячие патчи)': 'DEV mode (hot patches)', 'Выбор основного действия.': 'Choose the main action.', 'Умный (удержание + смена)': 'Smart (hold + cycle)', 'Имя процесса в диспетчере.': 'Process name in Task Manager.', 'Чьей громкостью управлять.': 'Whose volume to control.', 'Не удалось скопировать код.': 'Could not copy the code.', 'Звук при срабатывании кнопки': 'Sound on button press', 'Открыть конструктор прицелов': 'Open crosshair designer', 'Авто-настройка второй кнопки.': 'Auto-configure the second button.', 'Патчер: синтаксическая ошибка': 'Patcher: syntax error', 'Как кнопка управляет прицелом.': 'How the button controls the crosshair.', 'Код скопирован в буфер обмена.': 'Code copied to clipboard.', 'Направление регулировки звука.': 'Volume adjustment direction.', 'ОФОРМЛЕНИЕ (Windows 11 native)': 'APPEARANCE (Windows 11 native)', 'Сбросить к значениям по умолчанию': 'Reset to default values', 'Скругление 0=нет 1=малое 2=большое': 'Corner rounding 0=none 1=small 2=large', 'Задержка перед срабатыванием (сек).': 'Delay before triggering (sec).', 'Прицел по умолчанию удалить нельзя.': 'The default crosshair cannot be deleted.', 'Укажите путь до картинки (png/jpg).': 'Specify the path to an image (png/jpg).', 'Определяет, что будет делать кнопка.': 'Determines what the button will do.', 'Неверный или повреждённый код прицела.': 'Invalid or corrupted crosshair code.', 'Библиотеки загружены! Зачистка призраков...': 'Libraries loaded! Cleaning up ghosts...', 'Укажите абсолютный путь до файла программы.': 'Specify the absolute path to the program file.', 'Точное имя процесса (например, spotify.exe).': 'Exact process name (e.g. spotify.exe).', 'Нажмите на клавишу, чтобы добавить её в комбинацию': 'Click a key to add it to the combination', 'Прицелы в ротации (порядок — по очерёдности выбора)': 'Crosshairs in rotation (order = selection order)', 'Укажите 0 для моментального срабатывания при клике.': 'Set 0 to trigger instantly on click.', 'Up: Увеличивает громкость.\nDown: Уменьшает громкость.': 'Up: increases volume.\nDown: decreases volume.', '💡 ПРИЦЕЛ\n\nНажатие — показать/скрыть выбранный прицел': '💡 CROSSHAIR\n\nPress — show/hide the selected crosshair', 'Ошибка: В буфере не найден ни патч, ни полный код скрипта.': 'Error: no patch or full script code found in the clipboard.', '✅ Код полностью перезаписан! Программа будет перезапущена.': '✅ Code fully rewritten! The program will restart.', 'Программа будет запущена с максимальными правами в Windows.': 'The program will be launched with maximum rights in Windows.', '🔓 Инициализация разработчика...\n\nDEV Режим разблокирован!': '🔓 Developer initialization...\n\nDEV Mode unlocked!', '✅ Микро-патч успешно применен! Программа будет перезапущена.': '✅ Micro-patch applied successfully! The program will restart.', 'Позволяет сразу назначить обратное действие на другую кнопку.': 'Lets you immediately assign the reverse action to another button.', 'Время удержания для второго действия. Укажите 1.0 для оверлея.': 'Hold time for the second action. Set 1.0 for overlay.', 'Прицелы создаются в конструкторе: Настройки → Открыть конструктор прицелов.': 'Crosshairs are created in the designer: Settings → Open crosshair designer.', '💡 ПРИЦЕЛ\n\nУдержание — показать/скрыть\nНажатие — следующий прицел из списка': '💡 CROSSHAIR\n\nHold — show/hide\nPress — next crosshair from the list', 'Нажмите «＋» и выберите клавишу на экранной клавиатуре. Клавиши нажимаются по порядку и отпускаются в обратном.': 'Press “+” and pick a key on the on-screen keyboard. Keys are pressed in order and released in reverse.', 'Вкл/Выкл — нажатие показывает или скрывает выбранный прицел.\n\nУмный — удержание показывает/скрывает прицел, короткое нажатие переключает на следующий из списка.': 'On/Off — pressing shows or hides the selected crosshair.\n\nSmart — holding shows/hides the crosshair, a short press switches to the next one in the list.', 'Процесс — приложение из поля Process (например, Spotify).\n\nАктивное приложение — то, окно которого сейчас на переднем плане (звук берётся и у его дочерних процессов, например у браузера).\n\nВся система — общая громкость Windows. Лимит из настроек ниже действует и здесь: поставьте 100, чтобы он не мешал.': "Process — the app from the Process field (e.g. Spotify).\n\nActive application — the window currently in the foreground (its child processes are included too, e.g. for browsers).\n\nWhole system — overall Windows volume. The limit from the settings below still applies here: set it to 100 if you don't want it in the way."}
     def tr(s):
@@ -460,6 +474,7 @@ try:
             try: parent_bg = parent.cget("bg")
             except Exception: parent_bg = "#111111"
             super().__init__(parent, width=w, height=h, bg=parent_bg, highlightthickness=0, bd=0, cursor=cursor, **kw)
+            self.not_scrollable = True   # колесо мыши над кнопкой прокручивает окно, а не кнопку
             self.bind("<Configure>", lambda e: self._draw())
             self.bind("<Enter>", self._on_enter)
             self.bind("<Leave>", self._on_leave)
@@ -1053,6 +1068,47 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         RoundBtn(row, text=_L("Установить модуль…", "Install module…"), command=install_module_dialog, bg="#2a2a2a", fg="#e8e8e8",
                   activebackground="#3a3a3a", activeforeground="#ffffff", relief=tk.FLAT, font=("Segoe UI", 10), padx=12, pady=4).pack(side=tk.RIGHT)
 
+    # ================= СИНХРОНИЗАЦИЯ ПАПОК (DEV) =================
+    NUMBS_SRC = r"C:\numbs"
+    NUMBS_TARGETS = ("numbinder", "!upload")
+
+    def sync_numbs_folders():
+        """Копирует всё из C:\\numbs в C:\\numbs\\numbinder и C:\\numbs\\!upload с заменой.
+        Сами целевые папки в копирование не попадают, поэтому они не вкладываются друг в друга."""
+        import shutil
+        src = NUMBS_SRC
+        if not os.path.isdir(src):
+            return False, _L(f"Папка не найдена: {src}", f"Folder not found: {src}")
+        targets = [os.path.join(src, n) for n in NUMBS_TARGETS]
+        skip = {n.lower() for n in NUMBS_TARGETS}
+        for t in targets:
+            os.makedirs(t, exist_ok=True)
+        copied = 0
+        for name in os.listdir(src):
+            if name.lower() in skip: continue
+            full = os.path.join(src, name)
+            for t in targets:
+                dst = os.path.join(t, name)
+                if os.path.isdir(full):
+                    shutil.copytree(full, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(full, dst)
+            copied += 1
+        _runlog(f"sync_numbs: copied {copied} item(s) from {src} to {', '.join(targets)}")
+        return True, copied
+
+    def on_sync_numbs():
+        try:
+            ok, info = sync_numbs_folders()
+        except Exception as e:
+            _runlog("SYNC ERROR:\n" + traceback.format_exc())
+            ok, info = False, str(e)
+        if ok:
+            messagebox.showinfo("numbinder", _L(f"Готово. Скопировано элементов: {info}",
+                                                f"Done. Items copied: {info}"))
+        else:
+            messagebox.showerror("numbinder", str(info))
+
     def build_settings_screen():
         ui_root.osd_preview_mode = True
         ui_root.after(100, lambda: globals().get('force_osd_preview', lambda: None)())
@@ -1183,6 +1239,8 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             if dev_var.get():
                 patch_btn = RoundBtn(settings_content, text=tr("Применить патч из буфера"), bg="#c42b1c", fg="#ffffff", font=("Segoe UI", 10, "bold"), borderwidth=0, cursor="hand2", command=apply_patch_from_clipboard)
                 patch_btn.pack(pady=10, ipadx=10, ipady=6)
+                RoundBtn(settings_content, text=_L("Синхронизировать C:\\numbs", "Sync C:\\numbs"), bg="#1f6f3a", fg="#ffffff",
+                         font=("Segoe UI", 10, "bold"), command=on_sync_numbs).pack(pady=4, ipadx=10, ipady=6)
 
         btn_frame_set = tk.Frame(settings_content, bg=_bg)
         btn_frame_set.pack(side=tk.BOTTOM, pady=20, fill=tk.X, padx=40)
@@ -1648,7 +1706,9 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
     var_icon_color = tk.StringVar()
 
     row_type = create_dropdown_row(config_content, "Type", var_type, type_options(), tr("Выбор основного действия."), tr("Определяет, что будет делать кнопка."), lambda e: refresh_config_ui())
-    row_lang = create_dropdown_row(config_content, "Language", var_lang, ["ENG", "RUS", "DE"], tr("Язык переключения."), tr("Выберите язык из списка."))
+    row_lang = create_input_row(config_content, "Languages", var_lang,
+                                tr("Языки по кругу, через запятую: ENG, RUS, DE, FRA, ESP, UKR"),
+                                tr("Каждое нажатие переключает раскладку на следующий язык из списка."))
     row_path = create_input_row(config_content, "Path", var_path, tr("Путь до файла."), tr("Укажите абсолютный путь до файла программы."), browse_type="file")
     row_proc = create_input_row(config_content, "Process", var_proc, tr("Имя процесса в диспетчере."), tr("Точное имя процесса (например, spotify.exe)."), browse_type="process")
     row_act = create_input_row(config_content, "ActionTime", var_act, tr("Задержка перед срабатыванием (сек)."), tr("Укажите 0 для моментального срабатывания при клике."))
@@ -3124,6 +3184,22 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             delay = change_vol(vol_dir, vol_target, vol_mode)
             time.sleep(delay / 1000.0)
 
+    LANG_CODES = {"ENG": 0x04090409, "RUS": 0x04190419, "DE": 0x04070407,
+                  "FRA": 0x040C040C, "ESP": 0x0C0A0C0A, "UKR": 0x04220422}
+
+    def switch_layout_cycle(lang_str):
+        """Переключает раскладку активного окна на следующий язык из списка по кругу."""
+        names = [x.strip().upper() for x in (lang_str or "").split(",") if x.strip().upper() in LANG_CODES]
+        if not names: return None
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        tid = ctypes.windll.user32.GetWindowThreadProcessId(hwnd, None)
+        cur = ctypes.windll.user32.GetKeyboardLayout(tid) & 0xFFFF
+        ids = [LANG_CODES[n] & 0xFFFF for n in names]
+        idx = ids.index(cur) if cur in ids else -1
+        nxt = names[(idx + 1) % len(names)]
+        ctypes.windll.user32.PostMessageW(hwnd, 0x0050, 0, LANG_CODES[nxt])
+        return nxt
+
     def execute_action(sc, cfg, is_second_action=False):
         t = cfg.get("Type")
         if t and t != "none": play_action_sound()
@@ -3132,12 +3208,8 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             if is_second_action: manage_app(proc_name, path, action='close')
             else: manage_app(proc_name, path, run_as_user=not admin, action='launch')
         elif t == "lang" and not is_second_action:
-            lang_str = cfg.get("Language", "").upper()
-            code = {"ENG": 0x04090409, "RUS": 0x04190419, "DE": 0x04070407}.get(lang_str)
-            if code:
-                hwnd = ctypes.windll.user32.GetForegroundWindow()
-                ctypes.windll.user32.PostMessageW(hwnd, 0x0050, 0, code)
-                show_osd(tr("🌐 Язык: {}").format(lang_str))
+            nxt = switch_layout_cycle(cfg.get("Language", ""))
+            if nxt: show_osd(tr("🌐 Язык: {}").format(nxt))
         elif t and t.startswith("mod:") and not is_second_action:
             mid = t[4:]
             m = MODULES.get(mid)

@@ -1,27 +1,27 @@
 """
-ШАБЛОН МОДУЛЯ numbinder.
-Скопируйте этот файл, переименуйте (например, my_module.py) и поменяйте значения ниже.
-Файлы, имя которых начинается с "_", numbinder не загружает — поэтому шаблон сам не запускается.
-Подробнее: MODULES_GUIDE.txt
+numbinder module TEMPLATE.
+Copy this file, rename it (for example, my_module.py) and change the values below.
+Files whose names start with "_" are not loaded by numbinder, so this template never runs by itself.
+See MODULES_GUIDE.txt for details.
 """
 
-# 1. Описание. "id" должен быть уникальным и без пробелов. Именно он попадает в config.json.
+# 1. Description. "id" must be unique and contain no spaces. It is stored in config.json.
 MODULE = {
     "id": "my_module",
-    "name": {"ru": "Мой модуль", "en": "My module"},
-    "description": {"ru": "Что делает модуль.", "en": "What the module does."},
+    "name": {"ru": "My module", "en": "My module"},
+    "description": {"ru": "What the module does.", "en": "What the module does."},
     "version": "1.0.0",
     "author": "you",
 }
 
 
-# 2. Точка входа. numbinder вызывает её в отдельном потоке, когда нажата кнопка с этим модулем.
-#    ctx — помощники:
-#        ctx.osd("текст")          показать сообщение на экране
-#        ctx.log("текст")          записать в лог текущего запуска (crashlogs)
-#        ctx.settings()            словарь настроек модуля (хранится в config.json)
-#        ctx.save_settings()       сохранить config.json после изменения ctx.settings()
-#    cfg — настройки самой кнопки (Type, Path, ProcessName и т. д.).
+# 2. Entry point. numbinder calls it in a separate thread when a button with this module is pressed.
+#    ctx: helpers provided by numbinder
+#        ctx.osd("text")        show a message on screen
+#        ctx.log("text")        write a line to this run's log (crashlogs)
+#        ctx.settings()         the module's own settings dictionary (saved in config.json)
+#        ctx.save_settings()    save config.json after changing ctx.settings()
+#    cfg: the button's own settings (Type, Path, ProcessName, and so on)
 def run(ctx, cfg):
     ctx.log("my_module started")
-    ctx.osd("Привет от модуля!")
+    ctx.osd("Hello from the module!")

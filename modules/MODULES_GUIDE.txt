@@ -1,90 +1,76 @@
-numbinder modules / Модули numbinder
-====================================
+numbinder modules guide
+=======================
 
-A module is one Python file (.py) in C:\numbinder\modules\.
-Модуль — один Python-файл (.py) в папке C:\numbinder\modules\.
+A module is a single Python file (.py) in C:\numbinder\modules\.
 
-numbinder loads it at startup and adds it to the button "Type" list with a 🧩 icon.
-numbinder загружает его при запуске и добавляет в список "Тип" кнопок с иконкой 🧩.
+numbinder loads it at startup and adds it to the button "Type" list, marked with 🧩.
 
-WARNING / ВНИМАНИЕ
-Modules run with your account's rights: they can read and change files, start programs,
-read the clipboard and send keys. Install only code you trust.
-Модули работают с правами вашей учётной записи: могут читать и менять файлы, запускать
-программы, читать буфер обмена и отправлять нажатия. Ставьте только код, которому доверяете.
+WARNING
+-------
+Modules run with your account's rights. They can read and change files, start
+programs, read the clipboard and send keys. Install only code you trust.
 
 
-1. INSTALLING / УСТАНОВКА
--------------------------
-From the app: Settings -> Modules -> "Install module..." (the first time a warning appears).
-Из приложения: Настройки -> Модули -> "Установить модуль..." (при первой установке — предупреждение).
+1. INSTALLING A MODULE
+----------------------
+From the app: Settings -> Modules -> "Install module...".
+The first time, a warning window appears. You must accept it before installing.
 
-By hand: copy the .py file to C:\numbinder\modules\ and restart numbinder.
-Вручную: скопируйте .py в C:\numbinder\modules\ и перезапустите numbinder.
+By hand: copy the .py file into C:\numbinder\modules\ and restart numbinder.
 
-Then pick the module in the button's "Type" field (it starts with 🧩).
-Затем выберите модуль в поле "Тип" кнопки (он начинается с 🧩).
+Then select the module in the button's "Type" field (it starts with 🧩).
 
 
-2. WRITING A MODULE / НАПИСАНИЕ МОДУЛЯ
----------------------------------------
-Copy modules\_template.py, rename it (e.g. my_module.py), edit it, and put it in modules\.
-Скопируйте modules\_template.py, переименуйте (например my_module.py), измените и положите в modules\.
+2. WRITING A MODULE
+-------------------
+Copy modules\_template.py, rename it (for example, my_module.py), edit it and
+place it in modules\.
 
-Required structure / Обязательная структура:
+Required structure:
 
     MODULE = {
-        "id": "my_module",                                  # unique, no spaces / уникальный, без пробелов
-        "name": {"ru": "Мой модуль", "en": "My module"},    # shown in the list / название в списке
-        "description": {"ru": "...", "en": "..."},          # optional / необязательно
-        "version": "1.0.0",                                 # optional / необязательно
-        "author": "you",                                    # optional / необязательно
+        "id": "my_module",                                  # unique, no spaces
+        "name": {"ru": "My module", "en": "My module"},    # shown in the list
+        "description": {"ru": "What the module does.", "en": "What the module does."},          # optional
+        "version": "1.0.0",                                 # optional
+        "author": "you",                                    # optional
     }
 
     def run(ctx, cfg):
         ...
 
-If MODULE with an id, or run(), is missing, the module is skipped and the error goes to the log.
-Если нет MODULE с id или функции run(), модуль пропускается, а ошибка идёт в лог.
+If the file has no MODULE with an "id", or no run() function, the module is
+skipped and the error is written to the log.
 
 
-3. HELPERS / ПОМОЩНИКИ (ctx)
-----------------------------
-    ctx.osd("text")          show a message on screen / показать сообщение на экране
-    ctx.log("text")          write to this run's log / записать в лог текущего запуска
-    ctx.settings()           the module's own settings dict, saved in config.json
-                             собственный словарь настроек модуля, хранится в config.json
-    ctx.save_settings()      save config.json after changing ctx.settings()
-                             сохранить config.json после изменения ctx.settings()
-
-cfg is the button's own settings: cfg.get("Type"), cfg.get("Path"), cfg.get("ProcessName"), etc.
-cfg — настройки самой кнопки: cfg.get("Type"), cfg.get("Path"), cfg.get("ProcessName") и т. д.
-
-An exception inside run() does not crash the app: it is logged and shown with ctx.osd().
-Исключение внутри run() не роняет программу: оно записывается в лог и показывается через ctx.osd().
-
-
-4. LIBRARIES / БИБЛИОТЕКИ
--------------------------
-A module may import any pip package. Already installed with numbinder:
-pyperclip, psutil, pycaw, pystray, Pillow, comtypes.
-Модуль может импортировать любые пакеты pip. Уже установлены вместе с numbinder:
-pyperclip, psutil, pycaw, pystray, Pillow, comtypes.
-For others run: python -m pip install package_name
-Для остальных: python -m pip install имя_пакета
-
-
-5. EXAMPLE / ПРИМЕР
--------------------
-modules\layout_fixer.py is the built-in layout fixer. Read it as a reference.
-modules\layout_fixer.py — встроенный модуль исправления раскладки. Используйте как образец.
-
-
-6. TIPS / СОВЕТЫ
+3. HELPERS (ctx)
 ----------------
+    ctx.osd("text")         show a message on screen
+    ctx.log("text")         write a line to this run's log
+    ctx.settings()          the module's own settings dictionary (saved in config.json)
+    ctx.save_settings()     save config.json after changing ctx.settings()
+
+cfg holds the button's own settings: cfg.get("Type"), cfg.get("Path"),
+cfg.get("ProcessName"), and so on.
+
+An exception inside run() does not crash the app. It is written to the log
+and shown with ctx.osd().
+
+
+4. LIBRARIES
+------------
+A module may import any pip package. These are already installed with numbinder:
+pyperclip, psutil, pycaw, pystray, Pillow, comtypes.
+For others, run: python -m pip install package_name
+
+
+5. EXAMPLE
+----------
+modules\layout_fixer.py is the built-in layout fixer. Use it as a reference.
+
+
+6. TIPS
+-------
 - Restart numbinder after changing a module file.
-  После изменения файла модуля перезапустите numbinder.
-- Files starting with "_" are not loaded (that is why _template.py is safe to keep).
-  Файлы с "_" в начале не загружаются (поэтому _template.py можно оставить).
-- Keep run() short; for long work start a thread inside it.
-  run() должен быть коротким; для долгой работы запускайте поток внутри.
+- Files whose names start with "_" are not loaded. That is why _template.py can stay.
+- Keep run() short. For long work, start a thread inside it.
