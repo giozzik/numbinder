@@ -11,6 +11,11 @@ own script from a module.
 - Modules you can install or write yourself
 - Automatic updates from GitHub, with your permission
 
+---
+
+## Download ↓↓↓
+
+[numbinder latest ver.](https://github.com/giozzik/numbinder/archive/refs/tags/v1.31.2.zip)
 
 ---
 
