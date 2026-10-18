@@ -1,0 +1,90 @@
+HOW TO INSTALL NUMBINDER
+=========================
+
+You will do 4 things:
+  1. Install Python (a free program that numbinder needs)
+  2. Download numbinder
+  3. Install 6 small helpers
+  4. Start numbinder
+
+Take your time. Each step says exactly what to click.
+
+
+STEP 1. INSTALL PYTHON
+----------------------
+1.1  Open your web browser and go to:
+         https://www.python.org/downloads/
+1.2  Click the big yellow button "Download Python 3.x.x".
+1.3  Open the file that downloaded (it ends in .exe).
+1.4  IMPORTANT: at the bottom of the first window, tick the box
+         [x] Add python.exe to PATH
+     If you skip this, nothing will work later.
+1.5  Click "Install Now".
+1.6  Wait until it says "Setup was successful". Click Close.
+
+
+STEP 2. DOWNLOAD NUMBINDER
+--------------------------
+2.1  Go to:
+         https://github.com/giozzik/numbinder
+2.2  Click the green "<> Code" button, then click "Download ZIP".
+2.3  Find the ZIP file in your Downloads folder.
+2.4  Right-click it and choose "Extract All...". Click "Extract".
+2.5  You now have a folder called "numbinder". Move it to your
+     Desktop, so it is easy to find.
+
+
+STEP 3. INSTALL THE HELPERS
+---------------------------
+3.1  Open the numbinder folder. You should see a file called
+     "requirements.txt". If you see it, you are in the right place.
+3.2  Click the empty space in the address bar at the top of the window
+     (the long bar that shows the folder path).
+     The path will turn blue.
+3.3  Type this word:   cmd
+     and press Enter.
+     A black window will open. This is normal.
+3.4  Copy this line, paste it into the black window with a
+     right-click, and press Enter:
+
+         python -m pip install -r requirements.txt
+
+3.5  Wait. Text will scroll by. This can take a minute or two.
+3.6  When it stops, the last line should say something like:
+         Successfully installed ...
+     Then you can close the black window.
+
+
+STEP 4. START NUMBINDER
+-----------------------
+4.1  Go back to the numbinder folder.
+4.2  Double-click the file "numbinder.pyw".
+4.3  The numbinder window opens. A small icon also appears
+     near the clock at the bottom right (the system tray).
+
+Next time, just double-click numbinder.pyw again.
+
+
+WHEN SOMETHING GOES WRONG
+-------------------------
+Problem: a window says "python is not recognized"
+    Fix:  Install Python again (Step 1). This time make sure the box
+          "Add python.exe to PATH" is ticked.
+
+Problem: a window says "numbinder is already running"
+    Fix:  Look near the clock (system tray). Right-click the numbinder
+          icon and choose Exit. Then start it again.
+
+Problem: the window does not open at all
+    Fix:  Open the folder "crashlogs" inside numbinder. Send the
+          newest file in it to the developer.
+
+Problem: the buttons look like plain green blocks
+    Fix:  Make sure the folder "assets" is inside numbinder, next to
+          numbinder.pyw.
+
+
+WANT TO LOOK AT THE SETTINGS?
+-----------------------------
+Open numbinder, then open Settings. You can change the language there
+(English or Russian). The app restarts when you change it.

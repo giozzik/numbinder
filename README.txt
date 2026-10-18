@@ -39,7 +39,7 @@ numbinder\
         numpad\          button shapes: single.png, double_hor.png, double_vert.png
         spotify.png ...  button icons (optional)
 
-Your personal settings are stored separately in C:\numbinder\config.json.
+Your personal settings are stored in config.json, next to numbinder.pyw.
 Do not share config.json, crashlogs\ or backups\ with other people.
 
 
@@ -54,7 +54,7 @@ The app stays in the system tray. Open Settings from the window or the tray menu
 
 5. LOGS
 -------
-Each launch writes its own log to C:\numbinder\crashlogs\run_<date>_pid<N>.txt
+Each launch writes its own log to crashlogs\run_<date>_pid<N>.txt (next to numbinder.pyw)
 When reporting a problem, send the newest file from that folder.
 
 
