@@ -11,7 +11,6 @@ own script from a module.
 - Modules you can install or write yourself
 - Automatic updates from GitHub, with your permission
 
-> Screenshot: add one here (for example `docs/screenshot.png`).
 
 ---
 
@@ -56,4 +55,4 @@ Only install modules whose code you trust.
 
 ## License
 
-Add your license here.
+MIT. See [LICENSE](LICENSE).
