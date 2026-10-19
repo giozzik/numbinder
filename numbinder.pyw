@@ -34,9 +34,9 @@ _th.excepthook = _thread_hook
 def _crash_lang():
     try:
         with open(os.path.join(BASE_DIR, "config.json"), "r", encoding="utf-8") as _f:
-            return json.load(_f).get("AppSettings", {}).get("lang", "ru")
+            return "en"
     except Exception:
-        return "ru"
+        return "en"
 
 def _crash_text(ru, en):
     return en if _crash_lang() == "en" else ru
@@ -44,7 +44,7 @@ def _crash_text(ru, en):
 def global_exception_handler(exc_type, exc_value, exc_traceback):
     tb_text = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
     _runlog("UNHANDLED:\n" + tb_text)
-    ctypes.windll.user32.MessageBoxW(0, _crash_text("Критическая ошибка запуска!", "Critical startup error!") + f"\n\n{tb_text}", "numbinder Crash", 0x10 | 0x40000)
+    ctypes.windll.user32.MessageBoxW(0, _crash_text("Critical startup error!", "Critical startup error!") + f"\n\n{tb_text}", "numbinder Crash", 0x10 | 0x40000)
     sys.exit(1)
 
 sys.excepthook = global_exception_handler
@@ -73,6 +73,7 @@ import json
 import os
 import re
 import base64
+import webbrowser
 
 try:
     import psutil
@@ -93,13 +94,43 @@ try:
     # Одна копия за раз: именованный mutex Windows вместо убийства других процессов.
     # (Прежний код убивал любой python с тем же путём, в том числе родительский процесс.)
     _single_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "numbinder_single_instance")
+    if ctypes.windll.kernel32.GetLastError() == 183 and "--after-update" in sys.argv:
+        for _ in range(80):   # после обновления ждём, пока завершится старая копия
+            time.sleep(0.25)
+            _single_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "numbinder_single_instance")
+            if ctypes.windll.kernel32.GetLastError() != 183: break
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         _runlog("another numbinder instance is already running -> exit 0")
-        ctypes.windll.user32.MessageBoxW(0, _crash_text("numbinder уже запущен.", "numbinder is already running."), "numbinder", 0x40)
+        ctypes.windll.user32.MessageBoxW(0, _crash_text("numbinder is already running.", "numbinder is already running."), "numbinder", 0x40)
         sys.exit(0)
 
     # ================= НАСТРОЙКИ =================
-    VERSION = "v1.31.1"
+    VERSION = "v1.32.0"
+    BUILD = 10                    # номер сборки: растёт на 1 при каждом релизе
+    GH_REPO = "giozzik/numbinder"
+    CHANGELOG = [
+        ("v1.32.0", ["New button type: Media control (play/pause, next, previous, stop, mute).",
+                     "Type descriptions fit the panel width."]),
+        ("v1.31.9", ["Settings: buttons no longer squeezed, Back moved to the top.",
+                     "Settings: Go to GitHub page button.",
+                     "clean2;0: Keep open list for apps that must not be closed.",
+                     "Pair Button no longer offers NumLock or numpad /.",
+                     "Each button type has a short description under the Back / Save row.",
+                     "Crosshair: designer button and an overlay hint in the button settings."]),
+        ("v1.31.8", ["Interface is English only.", "Square reset icons for the colour settings.", "This changelog window."]),
+        ("v1.31.7", ["Button colour is applied right after saving, no restart.", "Button settings window slides down from the top.",
+                     "Reset button for button colours, new default hover values.", "Clipboard patch system removed.",
+                     "clean2;0: hold to close extra apps (system apps are never touched).",
+                     "Layout fixer: hold mode fixes the selected text without Ctrl+A."]),
+        ("v1.31.6", ["Hover offset 3 px, tilt and glow tuned.", "Button press animation: shrinks and bounces back.",
+                     "Button settings window slides up from the bottom.", "Reset icon for the icon colour."]),
+        ("v1.31.5", ["Buttons move away from the cursor and tilt instead of a copy drawn on top.",
+                     "Click area matches the sprite.", "No flicker at the edge of a button."]),
+        ("v1.31.4", ["Volume button: Points mode (cycle through set levels).", "Friendly names for button types.",
+                     "Glow colour in global settings, dimming on hover removed.", "Layout fixer works on the whole field."]),
+        ("v1.31.3", ["Paired volume buttons stay in sync in both directions.", "Each button shows its pair."]),
+        ("v1.31.2", ["Faster hover, cursor no longer flickers.", "Settings window appears fully drawn."]),
+    ]   # показывается после обновления и по кнопке «What's new» в настройках
     VOLUME_LIMIT = 0.65 
     macro_enabled = True 
     active_keys = {}
@@ -116,7 +147,7 @@ try:
     # Все картинки и звук лежат в C:\numbinder\assets\. Старое расположение (корень папки) тоже поддерживается.
     PATH_ASSETS = os.path.join(PATH_DIR, "assets")
     def asset(rel):
-        """Все картинки и звук берутся ТОЛЬКО из C:\\numbinder\\assets\\."""
+        """All images and sounds are loaded ONLY from the assets folder next to numbinder.pyw."""
         return os.path.join(PATH_ASSETS, rel)
     _resolved_warned = set()
     def resolve_icon(p):
@@ -126,7 +157,7 @@ try:
         if os.path.exists(cand): return cand
         if p not in _resolved_warned:
             _resolved_warned.add(p)
-            _runlog(f"ICON NOT FOUND: {p} (и нет {cand})")
+            _runlog(f"ICON NOT FOUND: {p} (and no {cand})")
         return p
     PATH_LOGO = asset("logo.png")
     PATH_CONFIG = os.path.join(PATH_DIR, "config.json")
@@ -170,17 +201,17 @@ try:
 
     MACRO_TEMPLATE = {
         "Type": "none", "Language": "-1", "Path": "-1", "ProcessName": "-1", 
-        "ActionTime": 0, "SecondActionTime": -1, "AdminRights": -1, "VolumeDirection": 1, "Desc": tr("Новый макрос"),
+        "ActionTime": 0, "SecondActionTime": -1, "AdminRights": -1, "VolumeDirection": 1, "Desc": tr("New macro"),
         "IconPath": "", "IconColor": "#ffffff",
         "Audio": {"limit": 65, "low_thresh": 15, "low_step": 1, "low_delay": 150, "mid_thresh": 50, "mid_step": 5, "mid_delay": 120, "high_step": 3, "high_delay": 100},
         "Overlay": {"path": "", "x": -1, "y": -1, "w": 200, "h": 200, "alpha": 80, "lock_aspect": True, "interactive": True, "smooth": True, "fix_alpha": False, "blend": "black"},
-        "Crosshair": {"mode": "toggle", "name": "По умолчанию", "list": []},
+        "Crosshair": {"mode": "toggle", "name": "Default", "list": []},
         "Hotkey": []
     }
 
     DEFAULT_CONFIG = {
         "_version": VERSION,
-        "AppSettings": {"show_labels": True, "autostart": False, "dev_unlocked": False, "dev_enabled": False, "osd_scale": 1.0, "osd_x": 50, "osd_y": 5, "action_sound": True, "action_sound_volume": 100, "osd_text_color": "#cccccc", "osd_border_color": "#c7c7c7", "osd_bg_color": "#202020", "osd_glow_color": "#ebebeb", "lang": "ru"},
+        "AppSettings": {"show_labels": True, "autostart": False, "dev_unlocked": False, "dev_enabled": False, "osd_scale": 1.0, "osd_x": 50, "osd_y": 5, "action_sound": True, "action_sound_volume": 100, "osd_text_color": "#cccccc", "osd_border_color": "#c7c7c7", "osd_bg_color": "#202020", "osd_glow_color": "#ebebeb", "lang": "en", "auto_update": False, "update_remind_base": BUILD},
         "DevSettings": {
             "scale": 1.07, "base_size": 100, "spacing": 92, 
             "color_active": "#1db954", "color_inactive": "#3a3a3a",
@@ -188,14 +219,14 @@ try:
             "text_x_nlk": 28, "text_y_nlk": 29, "text_size_nlk": 8,
             "text_x_ent": 33, "text_y_ent": 29, "text_size_ent": 12,
             "layout_defaults_rev": 2,
-            "hover_scale": 1.3, "hover_y": 13, "hover_overlay": 20, "color_glow": "#1db954",
-            "win_w": 444, "win_h": 704, "win_pad": 12, "hover_blur": 15,
+            "hover_scale": 1.32, "hover_y": 3, "hover_rev": 2, "hover_tilt": 3, "color_glow": "#1db954",
+            "win_w": 444, "win_h": 704, "win_pad": 12, "hover_blur": 22,
             
             "theme_grad_top": "#2a2a2a", "theme_grad_bot": "#202020",
             "corner_style": 2, "window_alpha_pct": 100
         },
         "Crosshairs": {
-            "По умолчанию": {
+            "Default": {
                 "shape": "cross", "center_dot": True, "dot_size": 3,
                 "line_length": 10, "line_thickness": 2, "gap": 4, "rotation": 0,
                 "color": "#1db954", "opacity": 100,
@@ -246,7 +277,7 @@ try:
         try:
             _runlog("TK CRASH:\n" + tb_text)
         except: pass
-        ctypes.windll.user32.MessageBoxW(0, tr("Сбой анимации или Tkinter!\n\nОшибка: {}\n\nСмотри папку crashlogs").format(val), "Tkinter Crash", 0x10 | 0x40000)
+        ctypes.windll.user32.MessageBoxW(0, tr("Animation or Tkinter failure!\n\nError: {}\n\nSee the crashlogs folder.").format(val), "Tkinter Crash", 0x10 | 0x40000)
         sys.exit(1)
     ui_root.report_callback_exception = tk_crash_handler
 
@@ -276,6 +307,9 @@ try:
     # Новые дефолтные значения сетки/текста применяются один раз к уже существующему config.json
     _LAYOUT_KEYS = ("scale", "base_size", "spacing", "text_x", "text_y", "text_size",
                     "text_x_nlk", "text_y_nlk", "text_size_nlk", "text_x_ent", "text_y_ent", "text_size_ent")
+    if MACRO_CONFIG["DevSettings"].get("hover_rev", 0) < 2:
+        # новые стоковые значения эффектов наведения
+        MACRO_CONFIG["DevSettings"].update({"hover_scale": 1.32, "hover_y": 3, "hover_tilt": 3, "hover_blur": 22, "hover_rev": 2})
     if MACRO_CONFIG["DevSettings"].get("layout_defaults_rev", 0) < DEFAULT_CONFIG["DevSettings"]["layout_defaults_rev"]:
         for _k in _LAYOUT_KEYS:
             MACRO_CONFIG["DevSettings"][_k] = DEFAULT_CONFIG["DevSettings"][_k]
@@ -286,10 +320,7 @@ try:
         except Exception:
             pass
 
-    _EN_MAP = {"💡 ОВЕРЛЕЙ\n\nКороткое нажатие — Вкл/Выкл\nУдержание (Hold) — Открыть студию настройки": "💡 OVERLAY\n\nShort press — On/Off\nHold — Open the overlay studio", 'Имя': 'Name', 'Нет': 'None', 'Фон': 'Background', 'Круг': 'Circle', 'Цвет': 'Color', 'Цель': 'Target', 'Выбор': 'Choose', 'Крест': 'Cross', 'Назад': 'Back', 'Текст': 'Text', 'Точка': 'Dot', 'Выход': 'Exit', 'Высота': 'Height', 'ГОТОВО': 'DONE', 'Отмена': 'Cancel', 'Патчер': 'Patcher', 'Прицел': 'Crosshair', 'Тёмный': 'Dark', 'Ширина': 'Width', 'Закрыть': 'Close', 'Обводка': 'Outline', 'Прицелы': 'Crosshairs', 'Пёстрый': 'Busy', 'Светлый': 'Light', 'Удалить': 'Delete', 'Шаг (%)': 'Step (%)', 'Вкл/Выкл': 'On/Off', 'Загрузить': 'Load', 'Картинка:': 'Image:', 'Позиция X': 'Position X', 'Позиция Y': 'Position Y', 'Пропорции': 'Aspect ratio', 'Сохранить': 'Save', 'Цвет Glow': 'Glow Color', 'Настройки': 'Settings', '3. Обводка': '3. Outline', 'Выбрать...': 'Browse...', 'Кнопка ВКЛ': 'Button ON', 'Наложение:': 'Blend:', 'Не выбрано': 'Not selected', 'ПРЕВЬЮ 65%': 'PREVIEW 65%', 'Т-образный': 'T-shape', 'Тихая зона': 'Quiet zone', 'Цвет шапки': 'Header color', 'Вся система': 'Whole system', 'Кнопка ВЫКЛ': 'Button OFF', 'Код прицела': 'Crosshair code', 'Оверлей ВКЛ': 'Overlay ON', 'Прицел ВЫКЛ': 'Crosshair OFF', 'Сглаживание': 'Smoothing', 'ТЕКСТ ENTER': 'ENTER TEXT', 'ТЕКСТ ОБЩИЙ': 'GENERAL TEXT', 'Тип прицела': 'Crosshair type', 'Громкая зона': 'Loud zone', 'Новый макрос': 'New macro', 'Порог до (%)': 'Threshold up to (%)', 'Средняя зона': 'Medium zone', 'Цвет обводки': 'Outline color', 'Цвет прицела': 'Crosshair color', 'Выбор клавиши': 'Choose key', 'Задержка (мс)': 'Delay (ms)', 'Интерактивное': 'Interactive', 'Ошибка записи': 'Write error', 'Позиция X (%)': 'Position X (%)', 'Позиция Y (%)': 'Position Y (%)', 'Применить код': 'Apply code', 'Режим прицела': 'Crosshair mode', 'СОХРАНИТЬ ВСЁ': 'SAVE ALL', 'ТЕКСТ NUMLOCK': 'NUMLOCK TEXT', 'Путь до иконки': 'Icon path', 'Путь до файла.': 'File path.', 'Размер (Scale)': 'Size (Scale)', 'СТУДИЯ ОВЕРЛЕЯ': 'OVERLAY STUDIO', 'Сбросить цвета': 'Reset colors', 'Студия Оверлея': 'Overlay Studio', 'Точка в центре': 'Center dot', 'ГЕОМЕТРИЯ СЕТКИ': 'GRID GEOMETRY', 'Громкость звука': 'Sound volume', 'Названия кнопок': 'Button labels', 'Размытие (Blur)': 'Blur', 'Свечение текста': 'Text glow', 'Скопировать код': 'Copy code', 'Включить обводку': 'Enable outline', 'Длина линий (px)': 'Line length (px)', 'Прицел не найден': 'Crosshair not found', 'Прозрачность (%)': 'Opacity (%)', 'Цвет поверхности': 'Surface color', 'Комбинация клавиш': 'Key combination', 'Лимит громкости %': 'Volume limit %', 'Размер точки (px)': 'Dot size (px)', 'Уведомления (OSD)': 'Notifications (OSD)', 'Угол поворота (°)': 'Rotation angle (°)', 'Цвета уведомлений': 'Notification colors', 'ЭФФЕКТЫ НАВЕДЕНИЯ': 'HOVER EFFECTS', 'Попытка запуска...': 'Launching...', 'Толщина линий (px)': 'Line thickness (px)', 'Хромакей (Magenta)': 'Chroma key (Magenta)', 'Язык переключения.': 'Language to switch to.', 'Активное приложение': 'Active application', 'Выбрать сохранённый': 'Choose saved', 'Зазор / отступ (px)': 'Gap / offset (px)', 'Конструктор прицела': 'Crosshair designer', 'Обычное (Black Key)': 'Normal (Black Key)', 'Прицел: список пуст': 'Crosshair: list is empty', 'Резкие края (Alpha)': 'Hard edges (Alpha)', 'Светлое (White Key)': 'Light (White Key)', 'Сохранённые прицелы': 'Saved crosshairs', '1. Форма и геометрия': '1. Shape and geometry', 'Введите имя прицела.': 'Enter a crosshair name.', 'Глобальные настройки': 'Global settings', 'Прозрачность окна, %': 'Window opacity, %', 'Толщина обводки (px)': 'Outline thickness (px)', 'Оверлей: Нет картинки': 'Overlay: No image', '2. Цвет и прозрачность': '2. Color and opacity', 'Процесс (поле Process)': 'Process (Process field)', 'Долгое удержание (сек).': 'Long hold (sec).', 'Запуск вместе с Windows': 'Start with Windows', 'Запуск от имени Админа.': 'Run as Administrator.', 'Такой прицел не найден.': 'That crosshair was not found.', 'Выберите язык из списка.': 'Choose a language from the list.', 'Какой прицел показывать.': 'Which crosshair to show.', 'Настройки звука процесса': 'Process sound settings', 'Применить патч из буфера': 'Apply patch from clipboard', 'Прозрачность обводки (%)': 'Outline opacity (%)', 'DEV режим (горячие патчи)': 'DEV mode (hot patches)', 'Выбор основного действия.': 'Choose the main action.', 'Умный (удержание + смена)': 'Smart (hold + cycle)', 'Имя процесса в диспетчере.': 'Process name in Task Manager.', 'Чьей громкостью управлять.': 'Whose volume to control.', 'Не удалось скопировать код.': 'Could not copy the code.', 'Звук при срабатывании кнопки': 'Sound on button press', 'Открыть конструктор прицелов': 'Open crosshair designer', 'Авто-настройка второй кнопки.': 'Auto-configure the second button.', 'Патчер: синтаксическая ошибка': 'Patcher: syntax error', 'Как кнопка управляет прицелом.': 'How the button controls the crosshair.', 'Код скопирован в буфер обмена.': 'Code copied to clipboard.', 'Направление регулировки звука.': 'Volume adjustment direction.', 'ОФОРМЛЕНИЕ (Windows 11 native)': 'APPEARANCE (Windows 11 native)', 'Сбросить к значениям по умолчанию': 'Reset to default values', 'Скругление 0=нет 1=малое 2=большое': 'Corner rounding 0=none 1=small 2=large', 'Задержка перед срабатыванием (сек).': 'Delay before triggering (sec).', 'Прицел по умолчанию удалить нельзя.': 'The default crosshair cannot be deleted.', 'Укажите путь до картинки (png/jpg).': 'Specify the path to an image (png/jpg).', 'Определяет, что будет делать кнопка.': 'Determines what the button will do.', 'Неверный или повреждённый код прицела.': 'Invalid or corrupted crosshair code.', 'Библиотеки загружены! Зачистка призраков...': 'Libraries loaded! Cleaning up ghosts...', 'Укажите абсолютный путь до файла программы.': 'Specify the absolute path to the program file.', 'Точное имя процесса (например, spotify.exe).': 'Exact process name (e.g. spotify.exe).', 'Нажмите на клавишу, чтобы добавить её в комбинацию': 'Click a key to add it to the combination', 'Прицелы в ротации (порядок — по очерёдности выбора)': 'Crosshairs in rotation (order = selection order)', 'Укажите 0 для моментального срабатывания при клике.': 'Set 0 to trigger instantly on click.', 'Up: Увеличивает громкость.\nDown: Уменьшает громкость.': 'Up: increases volume.\nDown: decreases volume.', '💡 ПРИЦЕЛ\n\nНажатие — показать/скрыть выбранный прицел': '💡 CROSSHAIR\n\nPress — show/hide the selected crosshair', 'Ошибка: В буфере не найден ни патч, ни полный код скрипта.': 'Error: no patch or full script code found in the clipboard.', '✅ Код полностью перезаписан! Программа будет перезапущена.': '✅ Code fully rewritten! The program will restart.', 'Программа будет запущена с максимальными правами в Windows.': 'The program will be launched with maximum rights in Windows.', '🔓 Инициализация разработчика...\n\nDEV Режим разблокирован!': '🔓 Developer initialization...\n\nDEV Mode unlocked!', '✅ Микро-патч успешно применен! Программа будет перезапущена.': '✅ Micro-patch applied successfully! The program will restart.', 'Позволяет сразу назначить обратное действие на другую кнопку.': 'Lets you immediately assign the reverse action to another button.', 'Время удержания для второго действия. Укажите 1.0 для оверлея.': 'Hold time for the second action. Set 1.0 for overlay.', 'Прицелы создаются в конструкторе: Настройки → Открыть конструктор прицелов.': 'Crosshairs are created in the designer: Settings → Open crosshair designer.', '💡 ПРИЦЕЛ\n\nУдержание — показать/скрыть\nНажатие — следующий прицел из списка': '💡 CROSSHAIR\n\nHold — show/hide\nPress — next crosshair from the list', 'Нажмите «＋» и выберите клавишу на экранной клавиатуре. Клавиши нажимаются по порядку и отпускаются в обратном.': 'Press “+” and pick a key on the on-screen keyboard. Keys are pressed in order and released in reverse.', 'Вкл/Выкл — нажатие показывает или скрывает выбранный прицел.\n\nУмный — удержание показывает/скрывает прицел, короткое нажатие переключает на следующий из списка.': 'On/Off — pressing shows or hides the selected crosshair.\n\nSmart — holding shows/hides the crosshair, a short press switches to the next one in the list.', 'Процесс — приложение из поля Process (например, Spotify).\n\nАктивное приложение — то, окно которого сейчас на переднем плане (звук берётся и у его дочерних процессов, например у браузера).\n\nВся система — общая громкость Windows. Лимит из настроек ниже действует и здесь: поставьте 100, чтобы он не мешал.': "Process — the app from the Process field (e.g. Spotify).\n\nActive application — the window currently in the foreground (its child processes are included too, e.g. for browsers).\n\nWhole system — overall Windows volume. The limit from the settings below still applies here: set it to 100 if you don't want it in the way."}
     def tr(s):
-        if MACRO_CONFIG.get("AppSettings", {}).get("lang", "ru") == "en":
-            return _EN_MAP.get(s, s)
         return s
         
     for k, v in list(MACRO_CONFIG.items()):
@@ -297,9 +328,19 @@ try:
             if "Overlay" not in v:
                 v["Overlay"] = MACRO_TEMPLATE["Overlay"].copy()
             if "Crosshair" not in v:
-                v["Crosshair"] = {"mode": "toggle", "name": "По умолчанию", "list": []}
+                v["Crosshair"] = {"mode": "toggle", "name": "Default", "list": []}
             if "Hotkey" not in v:
                 v["Hotkey"] = []
+
+    MACRO_CONFIG["AppSettings"]["lang"] = "en"
+    _OLD_DEF = "\u041f\u043e \u0443\u043c\u043e\u043b\u0447\u0430\u043d\u0438\u044e"   # старое русское имя прицела
+    _cr = MACRO_CONFIG.get("Crosshairs", {})
+    if _OLD_DEF in _cr:
+        if "Default" not in _cr: _cr["Default"] = _cr[_OLD_DEF]
+        del _cr[_OLD_DEF]
+    for _k, _v in list(MACRO_CONFIG.items()):
+        if _k.isdigit() and isinstance(_v, dict) and isinstance(_v.get("Crosshair"), dict):
+            if _v["Crosshair"].get("name") == _OLD_DEF: _v["Crosshair"]["name"] = "Default"
 
     if MACRO_CONFIG.get("_version") != VERSION:
         MACRO_CONFIG["_version"] = VERSION
@@ -310,7 +351,7 @@ try:
     MODULES = {}  # id -> {"info": dict, "run": callable, "file": str}
 
     def _L(ru, en):
-        return en if MACRO_CONFIG["AppSettings"].get("lang", "ru") == "en" else ru
+        return en
 
     def _mod_name(info):
         n = info.get("name", info.get("id", "?"))
@@ -318,20 +359,60 @@ try:
             return n.get(MACRO_CONFIG["AppSettings"].get("lang", "ru"), n.get("ru", info.get("id", "?")))
         return str(n)
 
+    TYPE_DESCRIPTIONS = {
+        "none": "No action. The button is only a placeholder.",
+        "exec": "Launches an app or file. Set the path and the process name. Hold runs the second action.",
+        "lang": "Switches the keyboard layout to the next one in the language list.",
+        "volume": "Changes the volume of an app or the system. Use Pair Button to link an up and a down button.",
+        "restart": "Restarts numbinder.",
+        "overlay": "Short press toggles the overlay. Hold opens the overlay studio.",
+        "crosshair": "Shows or hides a crosshair on screen. Crosshairs are made in the crosshair designer.",
+        "light macro": "Presses the key combination (hotkey) you record.",
+        "clean": "clean2;0: on hold, closes your running apps. Use Keep open to list apps that must stay open.",
+        "media": "Presses a media key: play/pause, next or previous track, stop or mute. Works with any player.",
+    }
+    # (config key, label, Windows virtual-key code)
+    MEDIA_KEYS = [("playpause", "Play / Pause", 0xB3), ("next", "Next track", 0xB0),
+                  ("prev", "Previous track", 0xB1), ("stop", "Stop", 0xB2), ("mute", "Mute", 0xAD)]
+
+    def type_description(t):
+        if t and t.startswith("mod:"):
+            info = MODULES.get(t[4:], {}).get("info", {})
+            d = info.get("description", "")
+            return d.get("en", "") if isinstance(d, dict) else str(d or "")
+        return TYPE_DESCRIPTIONS.get(t, "")
+
+    def _type_labels():
+        """Friendly button type names (config keys stay the same)."""
+        return {
+            "none": _L("None", "None"),
+            "exec": _L("Launch app", "Launch app"),
+            "lang": _L("Switch layout", "Switch layout"),
+            "volume": _L("Volume", "Volume"),
+            "restart": _L("Restart numbinder", "Restart numbinder"),
+            "overlay": _L("Overlay", "Overlay"),
+            "crosshair": _L("Crosshair", "Crosshair"),
+            "light macro": _L("Simple macro", "Simple macro"),
+            "clean": _L("clean2;0 — close extra processes", "clean2;0 — close extra processes"),
+            "media": _L("Media control", "Media control"),
+        }
+
     def type_to_label(t):
         if isinstance(t, str) and t.startswith("mod:"):
             m = MODULES.get(t[4:])
             return ("🧩 " + _mod_name(m["info"])) if m else t
-        return t
+        return _type_labels().get(t, t)
 
     def label_to_type(l):
         if isinstance(l, str) and l.startswith("🧩 "):
             for mid, m in MODULES.items():
                 if "🧩 " + _mod_name(m["info"]) == l: return "mod:" + mid
+        for k, v in _type_labels().items():
+            if v == l: return k
         return l
 
     def type_options():
-        base = ["none", "exec", "lang", "volume", "restart", "dev patch", "overlay", "crosshair", "light macro"]
+        base = list(_type_labels().values())
         return base + [type_to_label("mod:" + mid) for mid in MODULES]
 
     def _load_modules():
@@ -349,7 +430,7 @@ try:
                 spec.loader.exec_module(mod)
                 info = getattr(mod, "MODULE", None)
                 if not isinstance(info, dict) or not info.get("id") or not callable(getattr(mod, "run", None)):
-                    raise ValueError("в модуле нет MODULE['id'] или функции run(ctx, cfg)")
+                    raise ValueError("module has no MODULE['id'] or run(ctx, cfg) function")
                 MODULES[str(info["id"])] = {"info": info, "run": mod.run, "file": fn}
             except Exception:
                 _runlog(f"MODULE LOAD FAILED {fn}:\n" + traceback.format_exc())
@@ -360,9 +441,10 @@ try:
         _runlog("modules loaded: " + ", ".join(MODULES.keys()))
 
     class ModuleContext:
-        """Что видит модуль: помощники без доступа к внутренностям numbinder."""
+        """What a module sees: helpers without access to numbinder internals."""
         def __init__(self, mod_id):
             self.module_id = mod_id
+            self.is_hold = False   # True, если модуль запущен удержанием (только для модулей с "hold": True)
         def osd(self, text):
             show_osd(str(text))
         def log(self, text):
@@ -373,6 +455,145 @@ try:
             save_config()
 
     _load_modules()
+
+    # ================= АВТООБНОВЛЕНИЕ (GitHub Releases) =================
+    def _http_get(url, timeout=15):
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "numbinder-updater", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
+
+    def fetch_latest_release():
+        """Returns {build, version, sha256, url} for the latest release, or None."""
+        try:
+            rel = json.loads(_http_get(f"https://api.github.com/repos/{GH_REPO}/releases/latest").decode("utf-8"))
+            assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
+            if "version.json" not in assets or "numbinder.pyw" not in assets:
+                return None
+            meta = json.loads(_http_get(assets["version.json"]).decode("utf-8"))
+            return {"build": int(meta["build"]), "version": meta.get("version", rel.get("tag_name", "")),
+                    "sha256": str(meta.get("sha256", "")).lower(), "url": assets["numbinder.pyw"]}
+        except Exception as e:
+            _runlog(f"update check failed: {e}")
+            return None
+
+    def _prune_backups(bdir, keep=10):
+        try:
+            files = sorted((os.path.join(bdir, f) for f in os.listdir(bdir) if f.startswith("numbinder_v")),
+                           key=os.path.getmtime, reverse=True)
+            for old in files[keep:]:
+                os.remove(old)
+        except Exception:
+            pass
+
+    def apply_update(info):
+        """Downloads the new numbinder.pyw, verifies it, backs up the current one and restarts the program."""
+        import hashlib, shutil, subprocess
+        data = _http_get(info["url"], timeout=60)
+        if info["sha256"] and hashlib.sha256(data).hexdigest() != info["sha256"]:
+            raise ValueError("checksum mismatch")
+        if len(data) < 5000:
+            raise ValueError("downloaded file is too small")
+        compile(data.decode("utf-8"), "numbinder.pyw", "exec")   # синтаксис проверяем до замены
+        bdir = os.path.join(BASE_DIR, "backups")
+        os.makedirs(bdir, exist_ok=True)
+        shutil.copy2(script_path, os.path.join(bdir, f"numbinder_{VERSION}_b{BUILD}.pyw"))
+        _prune_backups(bdir)
+        tmp = script_path + ".new"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, script_path)
+        _runlog(f"updated to build {info['build']} ({info['version']}), restarting")
+        subprocess.Popen([sys.executable, script_path, "--after-update"], cwd=BASE_DIR,
+                         creationflags=0x00000008 | 0x00000200)   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+    def _do_update(info):
+        def worker():
+            try:
+                apply_update(info)
+                ui_root.after(0, lambda: os._exit(0))
+            except Exception as e:
+                _runlog("UPDATE FAILED:\n" + traceback.format_exc())
+                ui_root.after(0, lambda: messagebox.showerror("numbinder", _L("Update failed: ", "Update failed: ") + str(e)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_update_info(info, manual):
+        app = MACRO_CONFIG["AppSettings"]
+        if not info:
+            if manual: messagebox.showinfo("numbinder", _L("Could not check for updates.", "Could not check for updates."))
+            return
+        if info["build"] <= BUILD:
+            if manual: messagebox.showinfo("numbinder", _L("You have the latest version.", "You have the latest version."))
+            return
+        if app.get("auto_update", False):
+            _do_update(info)
+            return
+        base = int(app.get("update_remind_base", BUILD))
+        if manual or info["build"] - base >= 10:
+            ask = _L(f"Version {info['version']} (build {info['build']}) is available. Update now?\n\n"
+                     "Yes — update and restart. No — remind me in 10 builds.",
+                     f"Version {info['version']} (build {info['build']}) is available. Update now?\n\n"
+                     "Yes: update and restart. No: remind me after 10 more builds.")
+            if messagebox.askyesno("numbinder", ask):
+                _do_update(info)
+            else:
+                app["update_remind_base"] = info["build"]
+                save_config()
+
+    def check_updates(manual=False):
+        def worker():
+            info = fetch_latest_release()
+            ui_root.after(0, lambda: on_update_info(info, manual))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _periodic_update_check():
+        check_updates(False)
+        ui_root.after(6 * 3600 * 1000, _periodic_update_check)
+
+    def _maybe_show_whats_new():
+        app = MACRO_CONFIG["AppSettings"]
+        last = app.get("last_seen_build")
+        if last is None:
+            app["last_seen_build"] = BUILD
+            save_config()
+            return
+        if int(last) < BUILD:
+            app["last_seen_build"] = BUILD
+            save_config()
+            show_changelog()
+
+    def show_changelog():
+        win = tk.Toplevel(ui_root)
+        win.title(f"numbinder {VERSION}")
+        win.configure(bg="#111111")
+        win.geometry("420x520")
+        win.transient(ui_root)
+        txt = tk.Text(win, bg="#111111", fg="#e8e8e8", font=("Segoe UI", 10), wrap="word", bd=0, padx=24, pady=18, highlightthickness=0)
+        txt.pack(fill=tk.BOTH, expand=True)
+        txt.tag_configure("ver", font=("Segoe UI", 12, "bold"), foreground="#1db954", spacing1=8)
+        for ver, items in CHANGELOG:
+            txt.insert(tk.END, f"{ver}\n", "ver")
+            for it in items:
+                txt.insert(tk.END, f"  •  {it}\n")
+        txt.configure(state="disabled")
+        RoundBtn(win, text="Close", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=win.destroy).pack(fill=tk.X, padx=24, pady=12, ipady=6)
+
+    def on_auto_update_toggle(var):
+        MACRO_CONFIG["AppSettings"]["auto_update"] = bool(var.get())
+        save_config()
+
+    def create_update_section(parent):
+        _bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#111111")
+        tk.Label(parent, text=_L("Updates", "Updates"), fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
+        auto_var = tk.BooleanVar(value=MACRO_CONFIG["AppSettings"].get("auto_update", False))
+        create_switch_row(parent, _L("Install updates automatically", "Install updates automatically"), auto_var,
+                          command=lambda: on_auto_update_toggle(auto_var))
+        tk.Label(parent, text=f"{VERSION} · build {BUILD}", fg="#777777", bg=_bg, font=("Consolas", 9)).pack(anchor="w", padx=30)
+        RoundBtn(parent, text="What's new", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=show_changelog).pack(fill=tk.X, padx=40, pady=(5, 5), ipady=5)
+        RoundBtn(parent, text=_L("Check for updates", "Check for updates"), bg="#2d2d2d", fg="#ffffff",
+                 font=("Segoe UI", 10), command=lambda: check_updates(True)).pack(pady=6, ipadx=10, ipady=4)
+        RoundBtn(parent, text=_L("Go to GitHub page", "Go to GitHub page"), bg="#2d2d2d", fg="#ffffff",
+                 font=("Segoe UI", 10), command=lambda: webbrowser.open(f"https://github.com/{GH_REPO}")).pack(pady=(0, 6), ipadx=10, ipady=4)
 
     def save_config():
         with open(PATH_CONFIG, "w", encoding="utf-8") as f:
@@ -412,7 +633,7 @@ try:
             pass
 
     def apply_window_region(w, h):
-        """Скругление углов окна: радиус берётся из DevSettings['corner_radius'] (по умолчанию 32 px)."""
+        """Window corner rounding: the radius comes from DevSettings['corner_radius'] (default 32 px)."""
         try:
             r = int(MACRO_CONFIG.get("DevSettings", {}).get("corner_radius", 32))
             hwnd = ctypes.windll.user32.GetParent(ui_root.winfo_id()) or ui_root.winfo_id()
@@ -452,7 +673,7 @@ try:
         except Exception as e: pass
 
     class RoundBtn(tk.Canvas):
-        """Скруглённая кнопка на Canvas. Заменяет tk.Button, принимает те же основные параметры."""
+        """Rounded button on a Canvas. Replaces tk.Button and accepts the same main options."""
         RADIUS = 10
         def __init__(self, parent, text="", command=None, bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10),
                      activebackground=None, activeforeground=None, padx=16, pady=7, width=None, height=None,
@@ -689,6 +910,7 @@ try:
     main_frame = tk.Frame(ui_root)
     main_frame.pack(fill=tk.BOTH, expand=True)
     canvas_numpad = tk.Canvas(main_frame, highlightthickness=0)
+    canvas_numpad.bind("<Leave>", lambda e: canvas_numpad.config(cursor=""))
     canvas_numpad.pack(fill=tk.BOTH, expand=True)
     canvas_numpad.is_main_canvas = True
 
@@ -782,62 +1004,6 @@ try:
     crosshair_bg_frame, crosshair_canvas, crosshair_content = create_scrollable_overlay()
 
     # --- СИСТЕМА АВТОПАТЧЕЙ ---
-    def backup_script():
-        try:
-            backup_dir = os.path.join(PATH_DIR, "backups")
-            os.makedirs(backup_dir, exist_ok=True)
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            with open(script_path, 'r', encoding='utf-8') as f: cur = f.read()
-            with open(os.path.join(backup_dir, f"numbinder_{ts}.pyw"), 'w', encoding='utf-8') as f: f.write(cur)
-        except Exception: pass
-
-    def check_syntax(code_str):
-        try:
-            compile(code_str, script_path, 'exec')
-            return None
-        except SyntaxError as e:
-            return tr("Строка {}: {}\n\n{}").format(e.lineno, e.msg, (e.text or '').strip())
-
-    def apply_patch_from_clipboard():
-        cb = pyperclip.paste().replace('\r\n', '\n')
-        if 'import sys' in cb and 'import tkinter' in cb and 'def global_exception_handler' in cb and '===PATCH_' + 'START===' not in cb:
-            err = check_syntax(cb)
-            if err:
-                messagebox.showerror(tr("Патчер: синтаксическая ошибка"), tr("Патч НЕ применён, файл не тронут.\n\n{}").format(err))
-                return
-            try:
-                backup_script()
-                with open(script_path, 'w', encoding='utf-8') as f: f.write(cb)
-                messagebox.showinfo(tr("Патчер"), tr("✅ Код полностью перезаписан! Программа будет перезапущена."))
-                restart_script()
-            except Exception as e: messagebox.showerror(tr("Ошибка записи"), tr("Не удалось полностью перезаписать файл:\n{}").format(e))
-            return
-
-        pattern = r'===PATCH_' + r'START===\n---FIND---\n(.*?)\n\+\+\+REPLACE\+\+\+\n(.*?)\n===PATCH_' + r'END==='
-        patches = re.findall(pattern, cb, re.DOTALL)
-        if not patches:
-            messagebox.showerror(tr("Патчер"), tr("Ошибка: В буфере не найден ни патч, ни полный код скрипта."))
-            return
-
-        try:
-            with open(script_path, 'r', encoding='utf-8') as f: source = f.read().replace('\r\n', '\n')
-            for find_str, rep_str in patches:
-                if find_str not in source:
-                    messagebox.showerror(tr("Патчер"), tr("Сбой патча! Не удалось найти блок кода:\n\n{}...").format(find_str[:100]))
-                    return
-                source = source.replace(find_str, rep_str)
-
-            err = check_syntax(source)
-            if err:
-                messagebox.showerror(tr("Патчер: синтаксическая ошибка"), tr("Патч НЕ применён, файл не тронут.\n\n{}").format(err))
-                return
-
-            backup_script()
-            with open(script_path, 'w', encoding='utf-8') as f: f.write(source)
-            messagebox.showinfo(tr("Патчер"), tr("✅ Микро-патч успешно применен! Программа будет перезапущена."))
-            restart_script()
-        except Exception as e: messagebox.showerror(tr("Ошибка записи"), tr("Не удалось обновить файл:\n{}").format(e))
-
     # --- САНДБОКС ---
     def open_dev_sandbox():
         box = tk.Toplevel(ui_root)
@@ -892,48 +1058,48 @@ try:
 
         def set_color(key):
             import tkinter.colorchooser as cc
-            c = cc.askcolor(title=tr("Цвет"), color=MACRO_CONFIG.get("DevSettings", {}).get(key, "#ffffff"))[1]
+            c = cc.askcolor(title=tr("Color"), color=MACRO_CONFIG.get("DevSettings", {}).get(key, "#ffffff"))[1]
             if c: MACRO_CONFIG["DevSettings"][key] = c; draw_numpad()
             
         def create_color_btn(parent, label, key):
             RoundBtn(parent, text=label, bg="#333", fg="#fff", bd=0, cursor="hand2", command=lambda: set_color(key)).pack(fill=tk.X, pady=2)
         
-        b_theme = Collapsible(tr("ОФОРМЛЕНИЕ (Windows 11 native)"))
-        create_color_btn(b_theme.content, tr("Цвет шапки"), "theme_grad_top")
-        create_color_btn(b_theme.content, tr("Цвет поверхности"), "theme_grad_bot")
+        b_theme = Collapsible(tr("APPEARANCE (Windows 11 native)"))
+        create_color_btn(b_theme.content, tr("Header color"), "theme_grad_top")
+        create_color_btn(b_theme.content, tr("Surface color"), "theme_grad_bot")
 
-        b_win = Collapsible(tr("ГЕОМЕТРИЯ СЕТКИ"))
+        b_win = Collapsible(tr("GRID GEOMETRY"))
         create_slider(b_win.content, "Scale", "scale", 0.5, 2.0, 0.01, 1.11, True)
         create_slider(b_win.content, "Base", "base_size", 40, 100, 1, 81)
         create_slider(b_win.content, "Spacing", "spacing", 50, 120, 1, 79)
-        create_color_btn(b_win.content, tr("Кнопка ВКЛ"), "color_active")
-        create_color_btn(b_win.content, tr("Кнопка ВЫКЛ"), "color_inactive")
+        create_color_btn(b_win.content, tr("Button ON"), "color_active")
+        create_color_btn(b_win.content, tr("Button OFF"), "color_inactive")
 
-        b_txt = Collapsible(tr("ТЕКСТ ОБЩИЙ"))
+        b_txt = Collapsible(tr("GENERAL TEXT"))
         create_slider(b_txt.content, "X", "text_x", 0, 60, 1, 29)
         create_slider(b_txt.content, "Y", "text_y", 0, 60, 1, 21)
         create_slider(b_txt.content, "Size", "text_size", 5, 25, 1, 12)
 
-        b_nlk = Collapsible(tr("ТЕКСТ NUMLOCK"))
+        b_nlk = Collapsible(tr("NUMLOCK TEXT"))
         create_slider(b_nlk.content, "X", "text_x_nlk", 0, 80, 1, 29)
         create_slider(b_nlk.content, "Y", "text_y_nlk", 0, 80, 1, 21)
         create_slider(b_nlk.content, "Size", "text_size_nlk", 5, 25, 1, 12)
 
-        b_ent = Collapsible(tr("ТЕКСТ ENTER"))
+        b_ent = Collapsible(tr("ENTER TEXT"))
         create_slider(b_ent.content, "X", "text_x_ent", 0, 80, 1, 29)
         create_slider(b_ent.content, "Y", "text_y_ent", 0, 80, 1, 21)
         create_slider(b_ent.content, "Size", "text_size_ent", 5, 25, 1, 12)
 
-        b_hov = Collapsible(tr("ЭФФЕКТЫ НАВЕДЕНИЯ"))
-        create_slider(b_hov.content, "Scale", "hover_scale", 1.0, 2.0, 0.01, 1.3, True)
-        create_slider(b_hov.content, "Y Float", "hover_y", 0, 50, 1, 13)
-        create_slider(b_hov.content, tr("Размытие (Blur)"), "hover_blur", 0, 50, 1, 15)
-        create_slider(b_hov.content, "Overlay %", "hover_overlay", 0, 100, 1, 20)
-        create_color_btn(b_hov.content, tr("Цвет Glow"), "color_glow")
+        b_hov = Collapsible(tr("HOVER EFFECTS"))
+        create_slider(b_hov.content, "Scale", "hover_scale", 1.0, 2.0, 0.01, 1.32, True)
+        create_slider(b_hov.content, tr("Move away from cursor (px)"), "hover_y", 0, 50, 1, 3)
+        create_slider(b_hov.content, tr("Tilt (°)"), "hover_tilt", 0, 20, 1, 3)
+        create_slider(b_hov.content, tr("Blur"), "hover_blur", 0, 50, 1, 22)
+        create_color_btn(b_hov.content, tr("Glow color"), "color_glow")
 
         bottom_fr = tk.Frame(box, bg="#1e1e1e")
         bottom_fr.pack(fill=tk.X, side=tk.BOTTOM)
-        RoundBtn(bottom_fr, text=tr("СОХРАНИТЬ ВСЁ"), bg="#cc2929", fg="#fff", font=("Consolas", 11, "bold"), bd=0, cursor="hand2", command=lambda: [save_config(), box.destroy()]).pack(fill=tk.X, padx=20, pady=15, ipady=8)
+        RoundBtn(bottom_fr, text=tr("SAVE ALL"), bg="#cc2929", fg="#fff", font=("Consolas", 11, "bold"), bd=0, cursor="hand2", command=lambda: [save_config(), box.destroy()]).pack(fill=tk.X, padx=20, pady=15, ipady=8)
 
         def reflow(e=None):
             w = canvas.winfo_width()
@@ -966,14 +1132,14 @@ try:
     
     def show_modules_warning(on_accept):
         w = tk.Toplevel(ui_root)
-        w.title(_L("numbinder — модули: важное предупреждение", "numbinder — modules: important warning"))
+        w.title(_L("numbinder — modules: important warning", "numbinder — modules: important warning"))
         w.configure(bg="#111111")
         sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
         ww, wh = min(900, sw - 80), min(640, sh - 120)
         w.geometry(f"{ww}x{wh}+{(sw - ww) // 2}+{(sh - wh) // 2}")
         w.transient(ui_root)
         w.grab_set()
-        tk.Label(w, text="⚠  " + _L("ВНИМАНИЕ: модули — это код, который запускается на вашем компьютере",
+        tk.Label(w, text="⚠  " + _L("WARNING: modules are code that runs on your computer",
                                     "WARNING: modules are code that runs on your computer"),
                  fg="#ffb4a8", bg="#111111", font=("Segoe UI", 16, "bold"), wraplength=ww - 60, justify="left").pack(anchor="w", padx=30, pady=(28, 12))
         body = _L(
@@ -1014,9 +1180,9 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             on_accept()
         def _cancel():
             w.destroy()
-        RoundBtn(btns, text=_L("Отмена", "Cancel"), command=_cancel, bg="#2a2a2a", fg="#e8e8e8", activebackground="#3a3a3a",
+        RoundBtn(btns, text=_L("Cancel", "Cancel"), command=_cancel, bg="#2a2a2a", fg="#e8e8e8", activebackground="#3a3a3a",
                   activeforeground="#ffffff", relief=tk.FLAT, font=("Segoe UI", 11), padx=22, pady=8).pack(side=tk.RIGHT, padx=(12, 0))
-        RoundBtn(btns, text=_L("Я понимаю риски, продолжить", "I understand the risks, continue"), command=_accept, bg="#8a2b22", fg="#ffffff",
+        RoundBtn(btns, text=_L("I understand the risks, continue", "I understand the risks, continue"), command=_accept, bg="#8a2b22", fg="#ffffff",
                   activebackground="#a8362b", activeforeground="#ffffff", relief=tk.FLAT, font=("Segoe UI", 11, "bold"), padx=22, pady=8).pack(side=tk.RIGHT)
 
     def _refresh_type_dropdowns():
@@ -1036,11 +1202,11 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 os.makedirs(MODULES_DIR, exist_ok=True)
                 shutil.copy2(path, os.path.join(MODULES_DIR, os.path.basename(path)))
             except Exception as e:
-                messagebox.showerror("numbinder", _L("Не удалось скопировать модуль:\n", "Could not copy the module:\n") + str(e))
+                messagebox.showerror("numbinder", _L("Could not copy the module:\n", "Could not copy the module:\n") + str(e))
                 return
             _load_modules()
             _refresh_type_dropdowns()
-            messagebox.showinfo("numbinder", _L("Модуль установлен. Он появится в списке «Тип» кнопок.",
+            messagebox.showinfo("numbinder", _L("Module installed. It will appear in the button Type list.",
                                                 "Module installed. It now appears in the button «Type» list."))
         if MACRO_CONFIG["AppSettings"].get("modules_warning_ack", False):
             _proceed()
@@ -1062,10 +1228,10 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         _bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#111111")
         row = tk.Frame(parent, bg=_bg)
         row.pack(fill=tk.X, padx=30, pady=8)
-        tk.Label(row, text=_L("Модули", "Modules"), fg="#e8e8e8", bg=_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
-        RoundBtn(row, text=_L("Открыть папку", "Open folder"), command=open_modules_folder, bg="#2a2a2a", fg="#e8e8e8",
+        tk.Label(row, text=_L("Modules", "Modules"), fg="#e8e8e8", bg=_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        RoundBtn(row, text=_L("Open folder", "Open folder"), command=open_modules_folder, bg="#2a2a2a", fg="#e8e8e8",
                   activebackground="#3a3a3a", activeforeground="#ffffff", relief=tk.FLAT, font=("Segoe UI", 10), padx=12, pady=4).pack(side=tk.RIGHT, padx=(8, 0))
-        RoundBtn(row, text=_L("Установить модуль…", "Install module…"), command=install_module_dialog, bg="#2a2a2a", fg="#e8e8e8",
+        RoundBtn(row, text=_L("Install module…", "Install module…"), command=install_module_dialog, bg="#2a2a2a", fg="#e8e8e8",
                   activebackground="#3a3a3a", activeforeground="#ffffff", relief=tk.FLAT, font=("Segoe UI", 10), padx=12, pady=4).pack(side=tk.RIGHT)
 
     # ================= СИНХРОНИЗАЦИЯ ПАПОК (DEV) =================
@@ -1078,7 +1244,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         import shutil
         src = NUMBS_SRC
         if not os.path.isdir(src):
-            return False, _L(f"Папка не найдена: {src}", f"Folder not found: {src}")
+            return False, _L(f"Folder not found: {src}", f"Folder not found: {src}")
         targets = [os.path.join(src, n) for n in NUMBS_TARGETS]
         skip = {n.lower() for n in NUMBS_TARGETS}
         for t in targets:
@@ -1104,7 +1270,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             _runlog("SYNC ERROR:\n" + traceback.format_exc())
             ok, info = False, str(e)
         if ok:
-            messagebox.showinfo("numbinder", _L(f"Готово. Скопировано элементов: {info}",
+            messagebox.showinfo("numbinder", _L(f"Done. Items copied: {info}",
                                                 f"Done. Items copied: {info}"))
         else:
             messagebox.showerror("numbinder", str(info))
@@ -1118,16 +1284,13 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         settings_canvas.config(bg=_bg)
         settings_content.config(bg=_bg)
         
-        tk.Label(settings_content, text=tr("Глобальные настройки"), fg="#ffffff", bg=_bg, font=("Segoe UI", 16, "bold")).pack(pady=(20, 10), anchor="w", padx=40)
+        tk.Label(settings_content, text=tr("Global settings"), fg="#ffffff", bg=_bg, font=("Segoe UI", 16, "bold")).pack(pady=(20, 10), anchor="w", padx=40)
+        btn_frame_set = tk.Frame(settings_content, bg=_bg)
+        btn_frame_set.pack(fill=tk.X, pady=(0, 10), padx=40)
+        RoundBtn(btn_frame_set, text=tr("Back"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 11), borderwidth=0, cursor="hand2", command=lambda: show_main_screen()).pack(fill=tk.X, expand=True, ipady=6)
         
-        # ---- Язык интерфейса (применяется после перезапуска) ----
-        lang_var = tk.StringVar(value="English" if MACRO_CONFIG["AppSettings"].get("lang", "ru") == "en" else "Русский")
-        def on_lang_change(e=None):
-            MACRO_CONFIG["AppSettings"]["lang"] = "en" if lang_var.get() == "English" else "ru"
-            save_config()
-            messagebox.showinfo("numbinder", "Restart numbinder to apply the language.\nПерезапустите numbinder, чтобы применить язык.")
-        create_dropdown_row(settings_content, "Language / Язык", lang_var, ["Русский", "English"], command=on_lang_change)
         create_modules_section(settings_content)
+        create_update_section(settings_content)
 
         autostart_var = tk.BooleanVar(value=MACRO_CONFIG["AppSettings"].get("autostart", False))
         def on_autostart_toggle():
@@ -1137,7 +1300,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
 
         auto_row = tk.Frame(settings_content, bg=_bg)
         auto_row.pack(fill=tk.X, padx=40, pady=8)
-        tk.Label(auto_row, text=tr("Запуск вместе с Windows"), bg=_bg, fg="#e8e8e8", font=("Segoe UI", 11)).pack(side=tk.LEFT)
+        tk.Label(auto_row, text=tr("Start with Windows"), bg=_bg, fg="#e8e8e8", font=("Segoe UI", 11)).pack(side=tk.LEFT)
         AnimatedSwitch(auto_row, autostart_var, bg=_bg, command=on_autostart_toggle).pack(side=tk.RIGHT)
 
         snd_var = tk.BooleanVar(value=MACRO_CONFIG["AppSettings"].get("action_sound", True))
@@ -1146,12 +1309,12 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             save_config()
         snd_row = tk.Frame(settings_content, bg=_bg)
         snd_row.pack(fill=tk.X, padx=40, pady=8)
-        tk.Label(snd_row, text=tr("Звук при срабатывании кнопки"), bg=_bg, fg="#e8e8e8", font=("Segoe UI", 11)).pack(side=tk.LEFT)
+        tk.Label(snd_row, text=tr("Sound on button press"), bg=_bg, fg="#e8e8e8", font=("Segoe UI", 11)).pack(side=tk.LEFT)
         AnimatedSwitch(snd_row, snd_var, bg=_bg, command=on_snd_toggle).pack(side=tk.RIGHT)
 
         vol_row = tk.Frame(settings_content, bg=_bg)
         vol_row.pack(fill=tk.X, padx=40, pady=5)
-        tk.Label(vol_row, text=tr("Громкость звука"), bg=_bg, fg="#e8e8e8", font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        tk.Label(vol_row, text=tr("Sound volume"), bg=_bg, fg="#e8e8e8", font=("Segoe UI", 10)).pack(side=tk.LEFT)
         snd_start = int(MACRO_CONFIG["AppSettings"].get("action_sound_volume", 100))
         snd_lbl = tk.Label(vol_row, text=f"{snd_start}%", fg="#1db954", bg=_bg, font=("Segoe UI", 9, "bold"), width=5, anchor="e")
         snd_lbl.pack(side=tk.RIGHT, padx=(5, 0))
@@ -1163,7 +1326,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         snd_slider.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0))
         snd_slider.bind("<ButtonRelease-1>", lambda e: play_action_sound(force=True), add="+")
 
-        tk.Label(settings_content, text=tr("Уведомления (OSD)"), fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
+        tk.Label(settings_content, text=tr("Notifications (OSD)"), fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
         
         def update_app_val(key, val, is_float=False):
             MACRO_CONFIG["AppSettings"][key] = float(val) if is_float else int(float(val))
@@ -1182,11 +1345,11 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             sc = FluentSlider(fr, from_=from_, to=to, value=start_val, is_float=is_float, bg=_bg, command=_on_change)
             sc.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10,0))
 
-        create_osd_slider(tr("Размер (Scale)"), "osd_scale", 0.5, 3.0, 0.1, True)
-        create_osd_slider(tr("Позиция X (%)"), "osd_x", 0, 100, 1)
-        create_osd_slider(tr("Позиция Y (%)"), "osd_y", 0, 100, 1)
+        create_osd_slider(tr("Size (Scale)"), "osd_scale", 0.5, 3.0, 0.1, True)
+        create_osd_slider(tr("Position X (%)"), "osd_x", 0, 100, 1)
+        create_osd_slider(tr("Position Y (%)"), "osd_y", 0, 100, 1)
 
-        tk.Label(settings_content, text=tr("Цвета уведомлений"), fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
+        tk.Label(settings_content, text=tr("Notification colors"), fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
         osd_color_vars = []
         def add_osd_color(label, key, default):
             var = tk.StringVar(value=MACRO_CONFIG["AppSettings"].get(key, default))
@@ -1200,29 +1363,40 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 force_osd_preview()
             var.trace_add("write", on_change)
             osd_color_vars.append((var, default))
-        add_osd_color(tr("Текст"), "osd_text_color", "#cccccc")
-        add_osd_color(tr("Свечение текста"), "osd_glow_color", "#ebebeb")
-        add_osd_color(tr("Фон"), "osd_bg_color", "#202020")
-        add_osd_color(tr("Обводка"), "osd_border_color", "#c7c7c7")
+        add_osd_color(tr("Text"), "osd_text_color", "#cccccc")
+        add_osd_color(tr("Text glow"), "osd_glow_color", "#ebebeb")
+        add_osd_color(tr("Background"), "osd_bg_color", "#202020")
+        add_osd_color(tr("Outline"), "osd_border_color", "#c7c7c7")
         def reset_osd_colors():
             for v, d in osd_color_vars: v.set(d)
-        RoundBtn(settings_content, text=tr("Сбросить цвета"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=reset_osd_colors).pack(fill=tk.X, padx=40, pady=(5, 5), ipady=5)
+        _rr = tk.Frame(settings_content, bg=_bg); _rr.pack(fill=tk.X, padx=40, pady=(5, 5))
+        RoundBtn(_rr, text="↺", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 12), borderwidth=0, cursor="hand2", command=reset_osd_colors).pack(side=tk.RIGHT, ipadx=9, ipady=5)
 
-        tk.Label(settings_content, text=_L("Цвета кнопок", "Button colors"), fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
+        tk.Label(settings_content, text=_L("Button colors", "Button colors"), fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
+        btn_color_vars = []
         def add_btn_color(label, key, default):
             var = tk.StringVar(value=MACRO_CONFIG["DevSettings"].get(key, default))
-            create_color_row(settings_content, label, var)
+            row = create_color_row(settings_content, label, var)
+            swatch = row.winfo_children()[1]
             def on_btn_color(*_):
                 MACRO_CONFIG["DevSettings"][key] = var.get()
                 save_config()
+                try: swatch.config(bg=var.get(), activebackground=var.get())
+                except Exception: pass
                 try: draw_numpad()
                 except Exception: pass
             var.trace_add("write", on_btn_color)
-        add_btn_color(tr("Кнопка ВКЛ"), "color_active", "#1db954")
-        add_btn_color(tr("Кнопка ВЫКЛ"), "color_inactive", "#3a3a3a")
+            btn_color_vars.append((var, default))
+        add_btn_color(tr("Button ON"), "color_active", "#1db954")
+        add_btn_color(tr("Button OFF"), "color_inactive", "#3a3a3a")
+        add_btn_color(tr("Hover glow"), "color_glow", "#1db954")
+        def reset_btn_colors():
+            for v, d in btn_color_vars: v.set(d)
+        _rr2 = tk.Frame(settings_content, bg=_bg); _rr2.pack(fill=tk.X, padx=40, pady=(5, 5))
+        RoundBtn(_rr2, text="↺", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 12), borderwidth=0, cursor="hand2", command=reset_btn_colors).pack(side=tk.RIGHT, ipadx=9, ipady=5)
 
-        tk.Label(settings_content, text=tr("Прицелы"), fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
-        RoundBtn(settings_content, text=tr("Открыть конструктор прицелов"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=lambda: open_crosshair_designer()).pack(fill=tk.X, padx=40, pady=5, ipady=6)
+        tk.Label(settings_content, text=tr("Crosshairs"), fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
+        RoundBtn(settings_content, text=tr("Open crosshair designer"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=lambda: open_crosshair_designer()).pack(fill=tk.X, padx=40, pady=5, ipady=6)
 
         if MACRO_CONFIG["AppSettings"].get("dev_unlocked", False):
             dev_var = tk.BooleanVar(value=MACRO_CONFIG["AppSettings"].get("dev_enabled", False))
@@ -1233,18 +1407,13 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             
             dev_row = tk.Frame(settings_content, bg=_bg)
             dev_row.pack(fill=tk.X, padx=40, pady=(20, 5))
-            tk.Label(dev_row, text=tr("DEV режим (горячие патчи)"), bg=_bg, fg="#f5d142", font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT)
+            tk.Label(dev_row, text=tr("DEV mode (hot patches)"), bg=_bg, fg="#f5d142", font=("Segoe UI", 11, "bold")).pack(side=tk.LEFT)
             AnimatedSwitch(dev_row, dev_var, bg=_bg, command=on_dev_toggle).pack(side=tk.RIGHT)
 
             if dev_var.get():
-                patch_btn = RoundBtn(settings_content, text=tr("Применить патч из буфера"), bg="#c42b1c", fg="#ffffff", font=("Segoe UI", 10, "bold"), borderwidth=0, cursor="hand2", command=apply_patch_from_clipboard)
-                patch_btn.pack(pady=10, ipadx=10, ipady=6)
-                RoundBtn(settings_content, text=_L("Синхронизировать C:\\numbs", "Sync C:\\numbs"), bg="#1f6f3a", fg="#ffffff",
+                RoundBtn(settings_content, text=_L("Sync C:\\numbs", "Sync C:\\numbs"), bg="#1f6f3a", fg="#ffffff",
                          font=("Segoe UI", 10, "bold"), command=on_sync_numbs).pack(pady=4, ipadx=10, ipady=6)
 
-        btn_frame_set = tk.Frame(settings_content, bg=_bg)
-        btn_frame_set.pack(side=tk.BOTTOM, pady=20, fill=tk.X, padx=40)
-        RoundBtn(btn_frame_set, text=tr("Назад"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 11), borderwidth=0, cursor="hand2", command=lambda: show_main_screen()).pack(fill=tk.X, expand=True, ipady=6)
 
     # Кнопки, которые нельзя назначить: NumLock и numpad '/'. Хук их не перехватывает,
     # поэтому RU-точка на той же клавише больше не срабатывает как макрос.
@@ -1260,104 +1429,196 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
     btn_img_cache = {}
     hover_cache = {}
     btn_geom_cache = {}
-    hover_state = {"sc": None, "target": None, "prog": 0.0, "job": None}
+    pil_cache = {}
+    hover_state = {"sc": None, "target": None, "p": 0.0, "job": None, "mx": 0, "my": 0, "refs": [],
+                   "press_t0": None, "press_sc": None}
+    HOVER_EASE = 0.3   # скорость догонялки анимации (0..1), чем больше — тем резче
+
+    # нажатие: кнопка сжимается на 8% и возвращается; та же экспоненциальная кривая, что у попапа
+    PRESS_DOWN_MS, PRESS_UP_MS, PRESS_DEPTH = 90, 260, 0.08
+    _EXP_LIM = 1 - 2 ** -10
+
+    def _press_scale(ms):
+        if ms < PRESS_DOWN_MS:
+            return 1.0 - PRESS_DEPTH * (1 - 2 ** (-10 * ms / PRESS_DOWN_MS)) / _EXP_LIM
+        if ms < PRESS_DOWN_MS + PRESS_UP_MS:
+            t = (ms - PRESS_DOWN_MS) / PRESS_UP_MS
+            return 1.0 - PRESS_DEPTH + PRESS_DEPTH * (1 - 2 ** (-10 * t)) / _EXP_LIM
+        return 1.0
+
+    def _press_active():
+        t0 = hover_state["press_t0"]
+        return t0 is not None and (time.perf_counter() - t0) * 1000.0 < PRESS_DOWN_MS + PRESS_UP_MS
+
+    def start_press(sc):
+        hover_state["press_t0"] = time.perf_counter()
+        hover_state["press_sc"] = sc
+        if hover_state["job"] is None: render_hover_frame()
+
+    def _set_static(sc, visible):
+        canvas_numpad.itemconfig(f"static_{sc}", state="normal" if visible else "hidden")
+
+    def _cache_pil(key, make):
+        if key not in pil_cache:
+            if len(pil_cache) > 600: pil_cache.clear()
+            pil_cache[key] = make()
+        return pil_cache[key]
+
+    def _tinted_pil(img_path, color, w, h):
+        """Button sprite tinted to the color. Cached as a PIL image (not rotated)."""
+        def make():
+            img = Image.open(img_path).convert("RGBA").resize((w, h), Image.Resampling.LANCZOS)
+            tr_, tg_, tb_ = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+            r, g, b, a = img.split()
+            r = r.point(lambda i: i * tr_ / 255); g = g.point(lambda i: i * tg_ / 255); b = b.point(lambda i: i * tb_ / 255)
+            return Image.merge("RGBA", (r, g, b, a))
+        return _cache_pil(("tint", img_path, color, w, h), make)
+
+    def _glow_base_pil(img_path, color, w, h, blur):
+        pad = blur * 3 + 10
+        def make():
+            base = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
+            shape = _tinted_pil(img_path, color, w, h)
+            base.paste(shape, (pad, pad), shape)
+            return base.filter(ImageFilter.GaussianBlur(blur))
+        return _cache_pil(("glow", img_path, color, w, h, blur), make), pad
+
+    def _draw_hover_frame(sc, p):
+        """Draws the pressed or hovered button at its current position: it moves away from the cursor and tilts."""
+        geom = btn_geom_cache.get(sc)
+        if not geom: return
+        dev = MACRO_CONFIG.get("DevSettings", {})
+        k = geom.get("k", 1.0)
+
+        # направление от курсора к центру кнопки
+        dx, dy = geom["cx"] - hover_state["mx"], geom["cy"] - hover_state["my"]
+        dist = max(1.0, (dx * dx + dy * dy) ** 0.5)
+        ux, uy = dx / dist, dy / dist
+        away = float(dev.get("hover_y", 13)) * p
+        ncx, ncy = geom["cx"] + ux * away, geom["cy"] + uy * away
+
+        pf = 1.0
+        if hover_state["press_sc"] == sc and hover_state["press_t0"] is not None:
+            pf = _press_scale((time.perf_counter() - hover_state["press_t0"]) * 1000.0)
+        s = (1.0 + (float(dev.get("hover_scale", 1.3)) - 1.0) * p) * pf
+        w, h = max(2, int(round(geom["w"] * s))), max(2, int(round(geom["h"] * s)))
+        # наклон: кнопка поворачивается «от курсора», сторона дальше от курсора поднимается
+        angle = -float(dev.get("hover_tilt", 8)) * p * ux
+
+        img_t = PATH_BTN_HOR if geom["cs"] == 2 else (PATH_BTN_VERT if geom["rs"] == 2 else PATH_BTN_SINGLE)
+        gl_c = dev.get("color_glow", "#1db954")
+        blur = int(dev.get("hover_blur", 15))
+        refs = []
+
+        # свечение (под кнопкой)
+        try:
+            gbase, _pad = _glow_base_pil(img_t, gl_c, w, h, blur)
+            glow = gbase.copy()
+            glow.putalpha(gbase.getchannel("A").point(lambda v: int(v * p)))
+            gph = ImageTk.PhotoImage(glow); refs.append(gph)
+            canvas_numpad.create_image(ncx, ncy, image=gph, tags="hover_fx_bg", state="disabled")
+        except Exception:
+            pass
+
+        # сама кнопка
+        try:
+            body = _tinted_pil(img_t, geom["color"], w, h)
+            if abs(angle) > 0.05:
+                body = body.rotate(angle, resample=Image.Resampling.BICUBIC)
+            bph = ImageTk.PhotoImage(body); refs.append(bph)
+            canvas_numpad.create_image(ncx, ncy, image=bph, tags="hover_fx", state="disabled")
+        except Exception:
+            canvas_numpad.create_polygon([ncx - w / 2, ncy - h / 2, ncx + w / 2, ncy - h / 2,
+                                          ncx + w / 2, ncy + h / 2, ncx - w / 2, ncy + h / 2],
+                                         fill=geom["color"], tags="hover_fx", state="disabled")
+
+        # иконка или название (едут вместе с кнопкой)
+        drawn_icon = False
+        st = MACRO_CONFIG.get(sc, {})
+        if geom["is_act"] and st.get("IconPath"):
+            ipath = resolve_icon(st["IconPath"])
+            icolor = st.get("IconColor", "#ffffff")
+            if os.path.exists(ipath):
+                ic_sz = int(min(w, h) * 0.45)
+                ik_key = f"icn_{sc}_{icolor}_{ic_sz}"
+                if ik_key not in btn_img_cache:
+                    t_icn = tint_image(ipath, icolor, ic_sz, ic_sz)
+                    if t_icn: btn_img_cache[ik_key] = t_icn
+                if ik_key in btn_img_cache:
+                    canvas_numpad.create_image(ncx, ncy, image=btn_img_cache[ik_key], tags="hover_fx", state="disabled")
+                    drawn_icon = True
+        if MACRO_CONFIG["AppSettings"].get("show_labels", True) and not drawn_icon:
+            t_c = "#ffffff" if geom["is_act"] else "#888888"
+            tx = (ncx - w / 2) + geom["t_x"] * k * s
+            ty = (ncy - h / 2) + geom["t_y"] * k * s
+            canvas_numpad.create_text(tx, ty, text=SC_NAMES.get(sc, sc), fill=t_c,
+                                      font=("Segoe UI", max(6, int(geom["t_size"] * k * s)), "bold"),
+                                      anchor="nw", tags="hover_fx", state="disabled")
+        hover_state["refs"] = refs   # держим ссылки на картинки, иначе Tk их удалит
 
     def render_hover_frame():
-        canvas_numpad.delete("hover_fx")
-        canvas_numpad.delete("hover_fx_bg")
-        sc = hover_state["sc"]
-        target = hover_state["target"]
-        
-        if target is not None:
-            if sc != target and hover_state["prog"] > 0: hover_state["prog"] -= 0.2
-            else: hover_state["sc"] = target; hover_state["prog"] += 0.2
-        else: hover_state["prog"] -= 0.2
-            
-        hover_state["prog"] = round(max(0.0, min(1.0, hover_state["prog"])), 1)
-        p = hover_state["prog"]
-        
-        if p > 0 and hover_state["sc"] in btn_geom_cache:
-            dev = MACRO_CONFIG.get("DevSettings", {})
-            geom = btn_geom_cache[hover_state["sc"]]
-            win_w = WIN_W
-            win_h = WIN_H
-            
-            ov_alpha = int(255 * (dev.get("hover_overlay", 20) / 100.0) * p)
-            if ov_alpha > 0:
-                ov_key = f"ov_{ov_alpha}"
-                if ov_key not in hover_cache:
-                    img = Image.new("RGBA", (2000, 2000), (0, 0, 0, ov_alpha))
-                    hover_cache[ov_key] = ImageTk.PhotoImage(img)
-                canvas_numpad.create_image(win_w/2, win_h/2, image=hover_cache[ov_key], tags="hover_fx_bg", state="disabled")
-            
-            sc_scale = 1.0 + (dev.get("hover_scale", 1.3) - 1.0) * p
-            draw_w, draw_h = int(geom["w"] * sc_scale), int(geom["h"] * sc_scale)
-            new_cy = geom["cy"] - (dev.get("hover_y", 13) * p)
-            
-            gl_c = dev.get("color_glow", "#1db954")
-            b_rad = int(dev.get("hover_blur", 15))
-            pad = b_rad * 3 + 10 
-            gl_base_key = f"gl_base_shape_{geom['cs']}_{geom['rs']}_{draw_w}_{draw_h}_{gl_c}_{b_rad}"
-            gl_key = f"gl_shape_{geom['cs']}_{geom['rs']}_{draw_w}_{draw_h}_{gl_c}_{b_rad}_{p}"
-            
-            if gl_key not in hover_cache:
-                if gl_base_key not in hover_cache:
-                    w_pad, h_pad = int(draw_w + pad*2), int(draw_h + pad*2)
-                    gl_img = Image.new("RGBA", (w_pad, h_pad), (0,0,0,0))
-                    
-                    img_t = PATH_BTN_HOR if geom["cs"] == 2 else (PATH_BTN_VERT if geom["rs"] == 2 else PATH_BTN_SINGLE)
-                    try:
-                        shape_img = Image.open(img_t).convert("RGBA").resize((int(draw_w), int(draw_h)), Image.Resampling.LANCZOS)
-                        tr, tg, tb = int(gl_c[1:3], 16), int(gl_c[3:5], 16), int(gl_c[5:7], 16)
-                        sr, sg, sb, sa = shape_img.split()
-                        sr = sr.point(lambda i: i * tr / 255); sg = sg.point(lambda i: i * tg / 255); sb = sb.point(lambda i: i * tb / 255)
-                        colored_shape = Image.merge('RGBA', (sr, sg, sb, sa))
-                        gl_img.paste(colored_shape, (int(pad), int(pad)), colored_shape)
-                    except: pass
-                    
-                    hover_cache[gl_base_key] = gl_img.filter(ImageFilter.GaussianBlur(b_rad))
-                
-                base_blur = hover_cache[gl_base_key].copy()
-                alpha = base_blur.split()[3].point(lambda i: int(i * p))
-                base_blur.putalpha(alpha)
-                hover_cache[gl_key] = ImageTk.PhotoImage(base_blur)
-            canvas_numpad.create_image(geom["cx"], new_cy, image=hover_cache[gl_key], tags="hover_fx_bg", state="disabled")
-            
-            img_t = PATH_BTN_HOR if geom["cs"] == 2 else (PATH_BTN_VERT if geom["rs"] == 2 else PATH_BTN_SINGLE)
-            btn_key = f"hbtn_{hover_state['sc']}_{geom['color']}_{draw_w}_{draw_h}"
-            if btn_key not in hover_cache:
-                tinted = tint_image(img_t, geom['color'], draw_w, draw_h)
-                hover_cache[btn_key] = tinted if tinted else "fail"
-            
-            if hover_cache[btn_key] != "fail": canvas_numpad.create_image(geom["cx"], new_cy, image=hover_cache[btn_key], tags="hover_fx", state="disabled")
-            else: canvas_numpad.create_polygon([geom["cx"]-draw_w/2, new_cy-draw_h/2, geom["cx"]+draw_w/2, new_cy+draw_h/2], fill=geom['color'], tags="hover_fx", state="disabled")
-            
-            drawn_icon = False
-            if geom['is_act'] and MACRO_CONFIG[hover_state['sc']].get("IconPath"):
-                ipath = resolve_icon(MACRO_CONFIG[hover_state['sc']]["IconPath"])
-                icolor = MACRO_CONFIG[hover_state['sc']].get("IconColor", "#ffffff")
-                if os.path.exists(ipath):
-                    ic_sz = int(min(draw_w, draw_h) * 0.45)
-                    ik_key = f"icn_{hover_state['sc']}_{icolor}_{ic_sz}"
-                    if ik_key not in btn_img_cache:
-                        tinted_icn = tint_image(ipath, icolor, ic_sz, ic_sz)
-                        if tinted_icn: btn_img_cache[ik_key] = tinted_icn
-                    if ik_key in btn_img_cache:
-                        canvas_numpad.create_image(geom["cx"], new_cy, image=btn_img_cache[ik_key], tags="hover_fx", state="disabled")
-                        drawn_icon = True
+        hs = hover_state
+        target = hs["target"]
+        # другая кнопка под курсором: возвращаем прежнюю на место
+        if hs["sc"] is not None and target != hs["sc"]:
+            canvas_numpad.delete("hover_fx"); canvas_numpad.delete("hover_fx_bg")
+            _set_static(hs["sc"], True)
+            hs["sc"] = None; hs["p"] = 0.0; hs["refs"] = []
+        if target is not None and hs["sc"] is None:
+            hs["sc"] = target; hs["p"] = 0.0
+            _set_static(target, False)
 
-            if MACRO_CONFIG["AppSettings"].get("show_labels", True) and not drawn_icon:
-                lbl = SC_NAMES.get(hover_state['sc'], hover_state['sc'])
-                t_c = "#ffffff" if geom['is_act'] else "#888888"
-                cur_tx, cur_ty = (geom["cx"] - draw_w/2) + geom["t_x"]*sc_scale, (new_cy - draw_h/2) + geom["t_y"]*sc_scale
-                canvas_numpad.create_text(cur_tx, cur_ty, text=lbl, fill=t_c, font=("Segoe UI", int(geom["t_size"]*sc_scale), "bold"), anchor="nw", tags="hover_fx", state="disabled")
-        
-        if (target is not None and p < 1.0) or (target is None and p > 0.0): hover_state["job"] = ui_root.after(15, render_hover_frame)
+        desired = 1.0 if target is not None else 0.0
+        p = hs["p"] + (desired - hs["p"]) * HOVER_EASE
+        if abs(desired - p) < 0.01: p = desired
+        hs["p"] = p
 
-    def trigger_hover(sc, is_enter):
-        if hover_state["job"]: ui_root.after_cancel(hover_state["job"]); hover_state["job"] = None
-        hover_state["target"] = sc if is_enter else None
-        render_hover_frame()
+        canvas_numpad.delete("hover_fx"); canvas_numpad.delete("hover_fx_bg")
+        if hs["sc"] is not None and (p > 0.005 or _press_active()):
+            _draw_hover_frame(hs["sc"], p)
+        if target is None and p <= 0.0 and hs["sc"] is not None:
+            _set_static(hs["sc"], True)
+            hs["sc"] = None; hs["refs"] = []
+
+        hs["job"] = ui_root.after(16, render_hover_frame) if (p != desired or _press_active()) else None
+
+    def set_hover_target(sc):
+        hover_state["target"] = sc
+        if hover_state["job"] is None:
+            render_hover_frame()
+
+    def _hit_button(x, y):
+        """Button whose resting rectangle contains the point. Matches the sprite."""
+        best, best_d = None, None
+        for sc, g in btn_geom_cache.items():
+            if abs(x - g["cx"]) <= g["w"] / 2 and abs(y - g["cy"]) <= g["h"] / 2:
+                d = (x - g["cx"]) ** 2 + (y - g["cy"]) ** 2
+                if best is None or d < best_d: best, best_d = sc, d
+        return best
+
+    def on_canvas_motion(e):
+        hover_state["mx"], hover_state["my"] = e.x, e.y
+        sc = _hit_button(e.x, e.y)
+        if sc is None:
+            canvas_numpad.config(cursor=""); set_hover_target(None)
+        elif sc in LOCKED_SC:
+            canvas_numpad.config(cursor="no"); set_hover_target(None)
+        else:
+            canvas_numpad.config(cursor="hand2"); set_hover_target(sc)
+
+    def on_canvas_leave(e):
+        canvas_numpad.config(cursor="")
+        set_hover_target(None)
+
+    def on_canvas_click(e):
+        sc = _hit_button(e.x, e.y)
+        if sc is None or sc in LOCKED_SC: return
+        start_press(sc)
+        make_click_handler(sc)(e)
+
+    canvas_numpad.bind("<Motion>", on_canvas_motion)
+    canvas_numpad.bind("<Leave>", on_canvas_leave)
+    canvas_numpad.bind("<Button-1>", on_canvas_click)
 
     def tint_image(img_path, target_color_hex, w_target, h_target, alpha=1.0):
         try:
@@ -1383,7 +1644,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                         if not MACRO_CONFIG["AppSettings"].get("dev_unlocked", False):
                             MACRO_CONFIG["AppSettings"]["dev_unlocked"] = True
                             save_config()
-                            messagebox.showinfo("DEV MODE", tr("🔓 Инициализация разработчика...\n\nDEV Режим разблокирован!"))
+                            messagebox.showinfo("DEV MODE", tr("🔓 Developer initialization...\n\nDEV mode unlocked!"))
             else:
                 open_config_screen(scan_code)
         return on_numpad_click
@@ -1391,6 +1652,10 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
     _first_place = {"done": False}
     def draw_numpad():
         canvas_numpad.delete("all")
+        if hover_state["job"]:
+            try: ui_root.after_cancel(hover_state["job"])
+            except Exception: pass
+        hover_state.update({"sc": None, "target": None, "p": 0.0, "job": None, "refs": [], "press_t0": None, "press_sc": None})
         apply_native_style()
         dev = MACRO_CONFIG.get("DevSettings", {})
         labels_var.set(MACRO_CONFIG["AppSettings"].get("show_labels", True))
@@ -1453,7 +1718,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             RoundBtn(controls_sub_fr, text="🛠️ DEV SANDBOX", bg="#f5d142", fg="#000", font=("Segoe UI", 8, "bold"), borderwidth=0, cursor="hand2", command=open_dev_sandbox).pack(side=tk.LEFT, ipady=2, ipadx=5)
         
         AnimatedSwitch(controls_sub_fr, labels_var, bg=dev.get("theme_grad_top", "#2a2a2a"), command=on_labels_toggle).pack(side=tk.RIGHT, padx=5)
-        tk.Label(controls_sub_fr, text=tr("Названия кнопок"), bg=dev.get("theme_grad_top", "#2a2a2a"), fg="#888888", font=("Segoe UI", 9)).pack(side=tk.RIGHT)
+        tk.Label(controls_sub_fr, text=tr("Button labels"), bg=dev.get("theme_grad_top", "#2a2a2a"), fg="#888888", font=("Segoe UI", 9)).pack(side=tk.RIGHT)
         
         # --- ОТРИСОВКА КНОПОК ---
         BASE_SIZE = dev.get("base_size", 81)
@@ -1489,23 +1754,14 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 else: tinted = tint_image(img_type, color, draw_w, draw_h)
                 if tinted: btn_img_cache[cache_key] = tinted
             
-            rect_id = canvas_numpad.create_image(center_x, center_y, image=btn_img_cache.get(cache_key)) if cache_key in btn_img_cache else canvas_numpad.create_polygon([x1+15,y1, x1+draw_w-15,y1, x1+draw_w,y1+15, x1+draw_w,y1+draw_h-15, x1+draw_w-15,y1+draw_h, x1+15,y1+draw_h, x1,y1+draw_h-15, x1,y1+15], smooth=True, fill=color)
+            st_tag = f"static_{sc}"
+            rect_id = canvas_numpad.create_image(center_x, center_y, image=btn_img_cache.get(cache_key), tags=(st_tag,)) if cache_key in btn_img_cache else canvas_numpad.create_polygon([x1+15,y1, x1+draw_w-15,y1, x1+draw_w,y1+15, x1+draw_w,y1+draw_h-15, x1+draw_w-15,y1+draw_h, x1+15,y1+draw_h, x1,y1+draw_h-15, x1,y1+15], smooth=True, fill=color, tags=(st_tag,))
             
             if sc == "69": t_x, t_y, t_s = dev.get("text_x_nlk", 29), dev.get("text_y_nlk", 21), int(dev.get("text_size_nlk", 12))
             elif sc == "284": t_x, t_y, t_s = dev.get("text_x_ent", 29), dev.get("text_y_ent", 21), int(dev.get("text_size_ent", 12))
             else: t_x, t_y, t_s = dev.get("text_x", 29), dev.get("text_y", 21), int(dev.get("text_size", 12))
             
-            btn_geom_cache[sc] = {"w": draw_w, "h": draw_h, "cx": center_x, "cy": center_y, "cs": col_span, "rs": row_span, "color": color, "is_act": is_active, "t_x": t_x, "t_y": t_y, "t_size": t_s}
-            
-            def bind_btn(r_id, s=sc):
-                if locked:
-                    canvas_numpad.tag_bind(r_id, "<Enter>", lambda e: canvas_numpad.config(cursor="no"))
-                    canvas_numpad.tag_bind(r_id, "<Leave>", lambda e: canvas_numpad.config(cursor=""))
-                    return
-                canvas_numpad.tag_bind(r_id, "<Button-1>", make_click_handler(s))
-                canvas_numpad.tag_bind(r_id, "<Enter>", lambda e, cur=s: [canvas_numpad.config(cursor="hand2"), trigger_hover(cur, True)])
-                canvas_numpad.tag_bind(r_id, "<Leave>", lambda e, cur=s: [canvas_numpad.config(cursor=""), trigger_hover(cur, False)])
-            bind_btn(rect_id)
+            btn_geom_cache[sc] = {"w": draw_w, "h": draw_h, "cx": center_x, "cy": center_y, "cs": col_span, "rs": row_span, "color": color, "is_act": is_active, "t_x": t_x, "t_y": t_y, "t_size": t_s, "k": SCALE}
 
             drawn_icon = False
             if is_active and MACRO_CONFIG[sc].get("IconPath"):
@@ -1518,13 +1774,13 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                         tinted_icn = tint_image(ipath, icolor, ic_sz, ic_sz)
                         if tinted_icn: btn_img_cache[ik_key] = tinted_icn
                     if ik_key in btn_img_cache:
-                        canvas_numpad.create_image(center_x, center_y, image=btn_img_cache[ik_key], tags="hover_fx", state="disabled")
+                        canvas_numpad.create_image(center_x, center_y, image=btn_img_cache[ik_key], tags=(st_tag,))
                         drawn_icon = True
 
             if show_lbls and not drawn_icon:
                 lbl_text = SC_NAMES.get(sc, sc)
                 txt_color = "#ffffff" if is_active else ("#5f5f5f" if locked else "#888888")
-                canvas_numpad.create_text((center_x - draw_w/2) + t_x*SCALE, (center_y - draw_h/2) + t_y*SCALE, text=lbl_text, fill=txt_color, font=("Segoe UI", int(t_s*SCALE), "bold"), anchor="nw")
+                canvas_numpad.create_text((center_x - draw_w/2) + t_x*SCALE, (center_y - draw_h/2) + t_y*SCALE, text=lbl_text, fill=txt_color, font=("Segoe UI", int(t_s*SCALE), "bold"), anchor="nw", tags=(st_tag,))
 
     class ToolTip:
         def __init__(self, widget, text):
@@ -1557,7 +1813,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
     config_title = tk.Label(config_content, text="", fg="#ffffff", font=("Segoe UI", 16, "bold"), bg="#1e1e1e")
     config_title.pack(anchor="w", padx=30, pady=(20, 10))
 
-    lbl_overlay_tip = tk.Label(config_content, text=tr("💡 ОВЕРЛЕЙ\n\nКороткое нажатие — Вкл/Выкл\nУдержание (Hold) — Открыть студию настройки"), fg="#f5d142", bg="#1e1e1e", font=("Segoe UI", 10, "bold"), justify=tk.CENTER)
+    lbl_overlay_tip = tk.Label(config_content, text=tr("💡 OVERLAY\n\nShort press — On/Off\nHold — open the overlay studio"), fg="#f5d142", bg="#1e1e1e", font=("Segoe UI", 10, "bold"), justify=tk.CENTER)
 
     def show_info_window(title, text):
         top = tk.Toplevel(ui_root)
@@ -1571,7 +1827,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                                      dwm_soft_shadow(ctypes.windll.user32.GetParent(top.winfo_id()))))
         tk.Label(top, text=title, fg="#ffffff", bg="#2d2d2d", font=("Segoe UI", 12, "bold")).pack(pady=(15,0))
         tk.Label(top, text=text, fg="#cccccc", bg="#2d2d2d", font=("Segoe UI", 10), justify=tk.LEFT, wraplength=300).pack(padx=15, pady=10, expand=True)
-        RoundBtn(top, text=tr("Закрыть"), bg="#3a3a3a", fg="#fff", font=("Segoe UI", 9), borderwidth=0, cursor="hand2", command=top.destroy).pack(side=tk.BOTTOM, pady=10, ipadx=10, ipady=4)
+        RoundBtn(top, text=tr("Close"), bg="#3a3a3a", fg="#fff", font=("Segoe UI", 9), borderwidth=0, cursor="hand2", command=top.destroy).pack(side=tk.BOTTOM, pady=10, ipadx=10, ipady=4)
 
     _dark_combo_style_done = [False]
     def _ensure_dark_combobox_style():
@@ -1622,7 +1878,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         elif browse_type == "process":
             def pick_proc():
                 top = tk.Toplevel(ui_root)
-                top.title(tr("Выбор"))
+                top.title(tr("Choose"))
                 top.configure(bg="#2d2d2d")
                 top.geometry("250x300")
                 top.attributes("-topmost", True)
@@ -1672,7 +1928,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         AnimatedSwitch(row, var, bg=_bg, command=command).pack(side=tk.RIGHT, padx=(10, 0))
         return row
         
-    def create_color_row(parent, label_text, var):
+    def create_color_row(parent, label_text, var, default=None):
         _bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#111111")
         row = tk.Frame(parent, bg=_bg)
         row.pack(fill=tk.X, padx=30, pady=8)
@@ -1687,6 +1943,11 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         btn = RoundBtn(row, bg=_c0, activebackground=_c0, width=3, height=1, bd=0, relief=tk.FLAT,
                         cursor="hand2", command=pick_c)
         btn.pack(side=tk.RIGHT, padx=(8, 0), ipadx=4, ipady=4)
+        if default:
+            def reset_c():
+                var.set(default); btn.config(bg=default, activebackground=default)
+            RoundBtn(row, text="↺", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0,
+                     cursor="hand2", command=reset_c).pack(side=tk.RIGHT, padx=(8, 0), ipadx=6, ipady=3)
         tk.Label(row, textvariable=var, fg="#aaaaaa", bg=_bg, font=("Consolas", 9)).pack(side=tk.RIGHT)
         return row
 
@@ -1696,42 +1957,63 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
     var_proc = tk.StringVar()
     var_act = tk.StringVar()
     var_sec = tk.StringVar()
+    var_clean_keep = tk.StringVar()
     var_admin_bool = tk.BooleanVar()
     var_vol_dir = tk.StringVar()
     var_vol_pair = tk.StringVar()
-    _VT_PROC, _VT_ACTIVE, _VT_SYSTEM = tr("Процесс (поле Process)"), tr("Активное приложение"), tr("Вся система")
+    var_vol_steps = tk.StringVar()
+    _VM_SLIDER, _VM_STEPS = _L("Smooth (slider)", "Smooth (slider)"), _L("Points (cycle)", "Points (cycle)")
+    var_vol_mode = tk.StringVar(value=_VM_SLIDER)
+    _VT_PROC,_VT_ACTIVE, _VT_SYSTEM = tr("Process (Process field)"), tr("Active application"), tr("Whole system")
     _VT_CODES = {_VT_PROC: "process", _VT_ACTIVE: "active", _VT_SYSTEM: "system"}
     var_vol_target = tk.StringVar(value=_VT_PROC)
     var_icon_path = tk.StringVar()
     var_icon_color = tk.StringVar()
 
-    row_type = create_dropdown_row(config_content, "Type", var_type, type_options(), tr("Выбор основного действия."), tr("Определяет, что будет делать кнопка."), lambda e: refresh_config_ui())
+    row_type = create_dropdown_row(config_content, "Type", var_type, type_options(), tr("Choose the main action."), tr("Determines what the button does."), lambda e: refresh_config_ui())
     row_lang = create_input_row(config_content, "Languages", var_lang,
-                                tr("Языки по кругу, через запятую: ENG, RUS, DE, FRA, ESP, UKR"),
-                                tr("Каждое нажатие переключает раскладку на следующий язык из списка."))
-    row_path = create_input_row(config_content, "Path", var_path, tr("Путь до файла."), tr("Укажите абсолютный путь до файла программы."), browse_type="file")
-    row_proc = create_input_row(config_content, "Process", var_proc, tr("Имя процесса в диспетчере."), tr("Точное имя процесса (например, spotify.exe)."), browse_type="process")
-    row_act = create_input_row(config_content, "ActionTime", var_act, tr("Задержка перед срабатыванием (сек)."), tr("Укажите 0 для моментального срабатывания при клике."))
-    row_sec = create_input_row(config_content, "Hold To Action", var_sec, tr("Долгое удержание (сек)."), tr("Время удержания для второго действия. Укажите 1.0 для оверлея."))
-    row_admin = create_switch_row(config_content, "Run as Admin", var_admin_bool, tr("Запуск от имени Админа."), tr("Программа будет запущена с максимальными правами в Windows."))
-    row_voltarget = create_dropdown_row(config_content, tr("Цель"), var_vol_target, [_VT_PROC, _VT_ACTIVE, _VT_SYSTEM], tr("Чьей громкостью управлять."), tr("Процесс — приложение из поля Process (например, Spotify).\n\nАктивное приложение — то, окно которого сейчас на переднем плане (звук берётся и у его дочерних процессов, например у браузера).\n\nВся система — общая громкость Windows. Лимит из настроек ниже действует и здесь: поставьте 100, чтобы он не мешал."), lambda e: refresh_config_ui())
-    row_voldir = create_dropdown_row(config_content, "Direction", var_vol_dir, ["Up (+)", "Down (-)"], tr("Направление регулировки звука."), tr("Up: Увеличивает громкость.\nDown: Уменьшает громкость."))
-    row_volpair = create_dropdown_row(config_content, "Pair Button", var_vol_pair, [tr("Нет")], tr("Авто-настройка второй кнопки."), tr("Позволяет сразу назначить обратное действие на другую кнопку."))
-    row_icon_path = create_input_row(config_content, "Icon Path", var_icon_path, tr("Путь до иконки"), tr("Укажите путь до картинки (png/jpg)."), browse_type="file")
-    row_icon_color = create_color_row(config_content, "Icon Color", var_icon_color)
+                                tr("Languages in a cycle, comma-separated: ENG, RUS, DE, FRA, ESP, UKR"),
+                                tr("Each press switches the layout to the next language in the list."))
+    row_path = create_input_row(config_content, "Path", var_path, tr("File path."), tr("Specify the absolute path to the program file."), browse_type="file")
+    row_proc = create_input_row(config_content, "Process", var_proc, tr("Process name in Task Manager."), tr("Exact process name (for example, spotify.exe)."), browse_type="process")
+    row_act = create_input_row(config_content, "ActionTime", var_act, tr("Delay before triggering (sec)."), tr("Set 0 to trigger instantly on click."))
+    row_sec = create_input_row(config_content, "Hold To Action", var_sec, tr("Long hold (sec)."), tr("Hold time for the second action. Set 1.0 for the overlay."))
+    var_media = tk.StringVar(value="Play / Pause")
+    row_media = create_dropdown_row(config_content, "Media key", var_media, [m[1] for m in MEDIA_KEYS], tr("Which media key to press."), tr("Play/pause, next, previous, stop or mute. Works with any media player."))
+    row_clean_keep = create_input_row(config_content, "Keep open", var_clean_keep, tr("clean2;0 exceptions."), tr("Comma-separated process names that clean2;0 must NOT close, e.g. discord, telegram. Case-insensitive, .exe optional."))
+    row_admin = create_switch_row(config_content, "Run as Admin", var_admin_bool, tr("Run as administrator."), tr("The program will be launched with maximum rights in Windows."))
+    row_voltarget = create_dropdown_row(config_content, tr("Target"), var_vol_target, [_VT_PROC, _VT_ACTIVE, _VT_SYSTEM], tr("Whose volume to control."), tr("Process — the app from the Process field (for example, Spotify).\n\nActive application — the window in the foreground (its child processes too, for example in a browser).\n\nWhole system — overall Windows volume. The limit below also applies here: set it to 100 if you don't want it to interfere."), lambda e: refresh_config_ui())
+    row_voldir = create_dropdown_row(config_content, "Direction", var_vol_dir, ["Up (+)", "Down (-)"], tr("Volume adjustment direction."), tr("Up: increases volume.\nDown: decreases volume."))
+    row_volmode = create_dropdown_row(config_content, _L("Mode", "Mode"), var_vol_mode, [_VM_SLIDER, _VM_STEPS], _L("How the volume changes.", "How the volume changes."), _L("Smooth — volume changes while you hold the button.\n\nPoints — each press jumps to the next value in the list, cycling (for example 0 → 50 → 100 → 0).", "Smooth: volume changes while you hold the button.\n\nPoints: each press jumps to the next value in the list, cycling (for example 0 → 50 → 100 → 0)."), command=lambda e: refresh_config_ui())
+    row_volsteps = create_input_row(config_content, _L("Points (%)", "Points (%)"), var_vol_steps, _L("Volume percentages, comma-separated.", "Volume percentages, comma-separated."), _L("For example: 0, 50, 100. Any number of points from 0 to 100.", "For example: 0, 50, 100. Any number of points from 0 to 100."))
+    row_volpair = create_dropdown_row(config_content, "Pair Button", var_vol_pair, [tr("None")], tr("Auto-configure the second button."), tr("Lets you assign the reverse action to another button at once."))
+    row_icon_path = create_input_row(config_content, "Icon Path", var_icon_path, tr("Icon path"), tr("Specify the image path (png/jpg)."), browse_type="file")
+    row_icon_color = create_color_row(config_content, "Icon Color", var_icon_color, default="#ffffff")
 
     # --- Прицел и лёгкий макрос: поля настройки ---
-    _CH_MODE_TOGGLE = tr("Вкл/Выкл")
-    _CH_MODE_SMART = tr("Умный (удержание + смена)")
+    _CH_MODE_TOGGLE = tr("On/Off")
+    _CH_MODE_SMART = tr("Smart (hold + cycle)")
     var_ch_mode = tk.StringVar(value=_CH_MODE_TOGGLE)
     var_ch_name = tk.StringVar()
     ch_sel = []
     hotkey_list = []
-    row_ch_mode = create_dropdown_row(config_content, tr("Режим прицела"), var_ch_mode, [_CH_MODE_TOGGLE, _CH_MODE_SMART], tr("Как кнопка управляет прицелом."), tr("Вкл/Выкл — нажатие показывает или скрывает выбранный прицел.\n\nУмный — удержание показывает/скрывает прицел, короткое нажатие переключает на следующий из списка."), lambda e: refresh_config_ui())
-    row_ch_name = create_dropdown_row(config_content, tr("Прицел"), var_ch_name, [], tr("Какой прицел показывать."), tr("Прицелы создаются в конструкторе: Настройки → Открыть конструктор прицелов."))
+    row_ch_mode = create_dropdown_row(config_content, tr("Crosshair mode"), var_ch_mode, [_CH_MODE_TOGGLE, _CH_MODE_SMART], tr("How the button controls the crosshair."), tr("On/Off — a press shows or hides the selected crosshair.\n\nSmart — holding shows/hides it, a short press switches to the next one in the list."), lambda e: refresh_config_ui())
+    row_ch_name = create_dropdown_row(config_content, tr("Crosshair"), var_ch_name, [], tr("Which crosshair to show."), tr("Crosshairs are created in the designer: Settings → Open crosshair designer."))
     lbl_ch_tip = tk.Label(config_content, text="", fg="#f5d142", bg="#1e1e1e", font=("Segoe UI", 10, "bold"), justify=tk.CENTER)
     ch_list_container = tk.Frame(config_content)
     row_hotkey = tk.Frame(config_content)
+    _cf_bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020")
+    lbl_type_desc = tk.Label(config_content, text="", fg="#cccccc", bg=_cf_bg, font=("Segoe UI", 10), justify=tk.CENTER, wraplength=290)
+    row_ch_designer = RoundBtn(config_content, text=tr("Open crosshair designer"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=lambda: open_crosshair_designer())
+    row_ch_hint = tk.Frame(config_content, bg=_cf_bg)
+    lbl_ch_hint_a = tk.Label(row_ch_hint, text=tr("Already have an image of your crosshair? Try "), fg="#aaaaaa", bg=_cf_bg, font=("Segoe UI", 9))
+    lbl_ch_hint_b = tk.Label(row_ch_hint, text="overlay", fg="#f5d142", bg=_cf_bg, font=("Segoe UI", 9, "bold underline"), cursor="hand2")
+    lbl_ch_hint_c = tk.Label(row_ch_hint, text=tr(" instead."), fg="#aaaaaa", bg=_cf_bg, font=("Segoe UI", 9))
+    lbl_ch_hint_a.pack(side=tk.LEFT); lbl_ch_hint_b.pack(side=tk.LEFT); lbl_ch_hint_c.pack(side=tk.LEFT)
+    def _go_overlay(_e=None):
+        var_type.set(type_to_label("overlay"))
+        refresh_config_ui()
+    lbl_ch_hint_b.bind("<Button-1>", _go_overlay)
 
     def _cfg_bg():
         return MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020")
@@ -1740,7 +2022,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         bg = _cfg_bg()
         ch_list_container.config(bg=bg)
         for w in ch_list_container.winfo_children(): w.destroy()
-        tk.Label(ch_list_container, text=tr("Прицелы в ротации (порядок — по очерёдности выбора)"), fg="#999999", bg=bg, font=("Segoe UI", 10, "bold"), anchor="w").pack(fill=tk.X, padx=30, pady=(5, 5))
+        tk.Label(ch_list_container, text=tr("Crosshairs in rotation (order = selection order)"), fg="#999999", bg=bg, font=("Segoe UI", 10, "bold"), anchor="w").pack(fill=tk.X, padx=30, pady=(5, 5))
         for n in list(MACRO_CONFIG.get("Crosshairs", {}).keys()):
             on = n in ch_sel
             text = f"{ch_sel.index(n) + 1}.  {n}" if on else n
@@ -1767,7 +2049,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         bg = _cfg_bg()
         row_hotkey.config(bg=bg)
         for w in row_hotkey.winfo_children(): w.destroy()
-        tk.Label(row_hotkey, text=tr("Комбинация клавиш"), fg="#e8e8e8", bg=bg, font=("Segoe UI", 10), anchor="w").pack(fill=tk.X, padx=30, pady=(8, 4))
+        tk.Label(row_hotkey, text=tr("Key combination"), fg="#e8e8e8", bg=bg, font=("Segoe UI", 10), anchor="w").pack(fill=tk.X, padx=30, pady=(8, 4))
         fnt = tkfont.Font(family="Segoe UI", size=10)
         avail = max(220, WIN_W - 110)
         state = {"line": None, "used": 0}
@@ -1791,13 +2073,13 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             put(build_chip, fnt.measure(name) + 44)
         put(lambda parent: RoundBtn(parent, text="＋", bg="#1db954", fg="#000000", font=("Segoe UI", 11, "bold"), borderwidth=0, cursor="hand2", command=lambda: open_key_picker(add_hotkey)), 40)
         if not hotkey_list:
-            tk.Label(row_hotkey, text=tr("Нажмите «＋» и выберите клавишу на экранной клавиатуре. Клавиши нажимаются по порядку и отпускаются в обратном."), fg="#777777", bg=bg, font=("Segoe UI", 9), justify=tk.LEFT, wraplength=max(220, avail)).pack(fill=tk.X, padx=30, pady=(2, 8))
+            tk.Label(row_hotkey, text=tr("Press “+” and choose a key on the on-screen keyboard. Keys are pressed in order and released in reverse."), fg="#777777", bg=bg, font=("Segoe UI", 9), justify=tk.LEFT, wraplength=max(220, avail)).pack(fill=tk.X, padx=30, pady=(2, 8))
         config_content.update_idletasks()
         config_canvas.configure(scrollregion=config_canvas.bbox("all"))
 
     _bg_cfg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#111111")
     sound_container = tk.Frame(config_content, bg=_bg_cfg)
-    tk.Label(sound_container, text=tr("Настройки звука процесса"), fg="#999999", bg=_bg_cfg, font=("Segoe UI", 11, "bold")).pack(pady=(15, 5), anchor="w", padx=30)
+    tk.Label(sound_container, text=tr("Process sound settings"), fg="#999999", bg=_bg_cfg, font=("Segoe UI", 11, "bold")).pack(pady=(15, 5), anchor="w", padx=30)
     
     audio_vars = {}
     def create_embedded_slider(parent, label, key, from_, to):
@@ -1811,22 +2093,22 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         sc = FluentSlider(fr, from_=from_, to=to, variable=v, bg=_bg_cfg, command=_on_change)
         sc.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10,0))
 
-    create_embedded_slider(sound_container, tr("Лимит громкости %"), "limit", 10, 100)
-    tk.Label(sound_container, text=tr("Тихая зона"), fg="#1db954", bg=_bg_cfg, font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=30, pady=(10,0))
-    create_embedded_slider(sound_container, tr("Порог до (%)"), "low_thresh", 1, 100)
-    create_embedded_slider(sound_container, tr("Шаг (%)"), "low_step", 1, 20)
-    create_embedded_slider(sound_container, tr("Задержка (мс)"), "low_delay", 10, 500)
-    tk.Label(sound_container, text=tr("Средняя зона"), fg="#1db954", bg=_bg_cfg, font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=30, pady=(10,0))
-    create_embedded_slider(sound_container, tr("Порог до (%)"), "mid_thresh", 1, 100)
-    create_embedded_slider(sound_container, tr("Шаг (%)"), "mid_step", 1, 20)
-    create_embedded_slider(sound_container, tr("Задержка (мс)"), "mid_delay", 10, 500)
-    tk.Label(sound_container, text=tr("Громкая зона"), fg="#1db954", bg=_bg_cfg, font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=30, pady=(10,0))
-    create_embedded_slider(sound_container, tr("Шаг (%)"), "high_step", 1, 20)
-    create_embedded_slider(sound_container, tr("Задержка (мс)"), "high_delay", 10, 500)
+    create_embedded_slider(sound_container, tr("Volume limit %"), "limit", 10, 100)
+    tk.Label(sound_container, text=tr("Quiet zone"), fg="#1db954", bg=_bg_cfg, font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=30, pady=(10,0))
+    create_embedded_slider(sound_container, tr("Threshold up to (%)"), "low_thresh", 1, 100)
+    create_embedded_slider(sound_container, tr("Step (%)"), "low_step", 1, 20)
+    create_embedded_slider(sound_container, tr("Delay (ms)"), "low_delay", 10, 500)
+    tk.Label(sound_container, text=tr("Medium zone"), fg="#1db954", bg=_bg_cfg, font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=30, pady=(10,0))
+    create_embedded_slider(sound_container, tr("Threshold up to (%)"), "mid_thresh", 1, 100)
+    create_embedded_slider(sound_container, tr("Step (%)"), "mid_step", 1, 20)
+    create_embedded_slider(sound_container, tr("Delay (ms)"), "mid_delay", 10, 500)
+    tk.Label(sound_container, text=tr("Loud zone"), fg="#1db954", bg=_bg_cfg, font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=30, pady=(10,0))
+    create_embedded_slider(sound_container, tr("Step (%)"), "high_step", 1, 20)
+    create_embedded_slider(sound_container, tr("Delay (ms)"), "high_delay", 10, 500)
 
     def refresh_config_ui(*args):
         t = label_to_type(var_type.get())
-        for r in [row_lang, row_path, row_proc, row_act, row_sec, row_admin, row_voltarget, row_voldir, row_volpair, sound_container, lbl_overlay_tip, row_ch_mode, row_ch_name, ch_list_container, lbl_ch_tip, row_hotkey]: r.pack_forget()
+        for r in [row_lang, row_path, row_proc, row_act, row_sec, row_clean_keep, row_admin, row_voltarget, row_volmode, row_volsteps, row_voldir, row_volpair, sound_container, lbl_overlay_tip, row_ch_mode, row_ch_name, ch_list_container, lbl_ch_tip, row_hotkey, row_ch_designer, row_ch_hint, lbl_type_desc, row_media]: r.pack_forget()
         
         row_icon_path.pack(fill=tk.X, padx=30, pady=2)
         row_icon_color.pack(fill=tk.X, padx=30, pady=2)
@@ -1836,11 +2118,16 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         elif t == "lang": row_lang.pack(fill=tk.X, padx=30, pady=2)
         elif t == "volume":
             row_voltarget.pack(fill=tk.X, padx=30, pady=2)
-            row_voldir.pack(fill=tk.X, padx=30, pady=2)
+            row_volmode.pack(fill=tk.X, padx=30, pady=2)
+            if var_vol_mode.get() == _VM_STEPS:
+                row_volsteps.pack(fill=tk.X, padx=30, pady=2)
+            else:
+                row_voldir.pack(fill=tk.X, padx=30, pady=2)
             if var_vol_target.get() == _VT_PROC: row_proc.pack(fill=tk.X, padx=30, pady=2)
             row_volpair.pack(fill=tk.X, padx=30, pady=2)
             sound_container.pack(fill=tk.X, pady=(10, 5))
         elif t == "restart": row_act.pack(fill=tk.X, padx=30, pady=2)
+        elif t == "media": row_media.pack(fill=tk.X, padx=30, pady=2)
         elif t == "overlay":
             lbl_overlay_tip.pack(fill=tk.X, pady=(10, 20))
             if float(var_sec.get() or -1) <= 0: var_sec.set("1.0")
@@ -1849,9 +2136,11 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             row_sec.pack(fill=tk.X, padx=30, pady=2)
         elif t == "crosshair":
             smart = var_ch_mode.get() == _CH_MODE_SMART
-            lbl_ch_tip.config(text=(tr("💡 ПРИЦЕЛ\n\nУдержание — показать/скрыть\nНажатие — следующий прицел из списка") if smart else tr("💡 ПРИЦЕЛ\n\nНажатие — показать/скрыть выбранный прицел")))
+            lbl_ch_tip.config(text=(tr("💡 CROSSHAIR\n\nHold — show/hide\nPress — next crosshair from the list") if smart else tr("💡 CROSSHAIR\n\nPress — show/hide the selected crosshair")))
             lbl_ch_tip.pack(fill=tk.X, pady=(10, 10))
             row_ch_mode.pack(fill=tk.X, padx=30, pady=2)
+            row_ch_designer.pack(fill=tk.X, padx=30, pady=(6, 2), ipady=5)
+            row_ch_hint.pack(pady=(2, 6))
             if smart:
                 render_ch_list()
                 ch_list_container.pack(fill=tk.X, pady=(5, 5))
@@ -1861,10 +2150,20 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 row_sec.pack(fill=tk.X, padx=30, pady=2)
             else:
                 row_ch_name.pack(fill=tk.X, padx=30, pady=2)
+        elif t == "clean" or (t.startswith("mod:") and MODULES.get(t[4:], {}).get("info", {}).get("hold")):
+            try: need_sec = float(var_sec.get() or -1) <= 0
+            except ValueError: need_sec = True
+            if need_sec: var_sec.set("1.0")
+            row_sec.pack(fill=tk.X, padx=30, pady=2)
+            if t == "clean": row_clean_keep.pack(fill=tk.X, padx=30, pady=2)
         elif t == "light macro":
             render_hotkey_chips()
             row_hotkey.pack(fill=tk.X, pady=(5, 5))
             
+        _desc = type_description(t)
+        lbl_type_desc.config(text=_desc, bg=MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020"))
+        if _desc:
+            lbl_type_desc.pack(fill=tk.X, padx=30, pady=(8, 4), after=config_bottom_fr)
         config_content.update_idletasks()
         config_canvas.configure(scrollregion=config_canvas.bbox("all"))
 
@@ -1876,12 +2175,25 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         aud_cfg = {k: v.get() for k, v in audio_vars.items()}
         current_overlay = MACRO_CONFIG.get(current_edit_sc, {}).get("Overlay", MACRO_TEMPLATE["Overlay"].copy())
         
-        act_save = 0.0 if t in ("crosshair", "light macro") else float(var_act.get() or 0)
+        act_save = 0.0 if t in ("crosshair", "light macro", "media") else float(var_act.get() or 0)
         sec_save = float(var_sec.get() or -1)
         if t == "light macro": sec_save = -1.0
         if t == "crosshair": sec_save = max(0.1, sec_save) if var_ch_mode.get() == _CH_MODE_SMART else -1.0
         
+        # --- режим громкости: плавно или точки ---
+        vm = "steps" if (t == "volume" and var_vol_mode.get() == _VM_STEPS) else "slider"
+        vsteps = sorted({max(0, min(100, int(x))) for x in re.findall(r"\d+", var_vol_steps.get())})
+        if vm == "steps" and not vsteps: vsteps = [0, 50, 100]
+
+        # --- пара (парная громкость) ---
+        old_pair = str(MACRO_CONFIG.get(current_edit_sc, {}).get("Pair", "-1"))
+        new_pair = "-1"
+        if t == "volume" and var_vol_pair.get() != tr("None"):
+            cand = next((k for k, v in SC_NAMES.items() if v == var_vol_pair.get()), None)
+            if cand and cand != current_edit_sc and cand not in LOCKED_SC: new_pair = str(cand)
+
         MACRO_CONFIG[current_edit_sc] = {
+            "Pair": new_pair,
             "Type": t,
             "Language": var_lang.get() if t == "lang" else "-1",
             "Path": var_path.get() if t == "exec" else "-1",
@@ -1891,6 +2203,10 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             "AdminRights": 1 if var_admin_bool.get() else 0,
             "VolumeDirection": vd if t == "volume" else 1,
             "VolumeTarget": _VT_CODES.get(var_vol_target.get(), "process"),
+            "VolumeMode": vm,
+            "VolumeSteps": vsteps,
+            "CleanKeep": var_clean_keep.get().strip() if t == "clean" else "",
+            "MediaKey": next((m[0] for m in MEDIA_KEYS if m[1] == var_media.get()), "playpause") if t == "media" else "-1",
             "Desc": f"Macro SC {current_edit_sc}",
             "IconPath": var_icon_path.get(),
             "IconColor": var_icon_color.get(),
@@ -1900,27 +2216,38 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             "Hotkey": list(hotkey_list)
         }
         
-        if t == "volume" and var_vol_pair.get() != tr("Нет"):
-            pair_name = var_vol_pair.get()
-            pair_sc = next((k for k, v in SC_NAMES.items() if v == pair_name), None)
-            if pair_sc:
-                MACRO_CONFIG[pair_sc] = {
-                    "Type": "volume", "Language": "-1", "Path": "-1",
-                    "ProcessName": var_proc.get(), "ActionTime": 0.0, "SecondActionTime": -1.0,
-                    "AdminRights": 0, "VolumeDirection": -vd, "VolumeTarget": _VT_CODES.get(var_vol_target.get(), "process"), "Desc": f"Pair for {current_edit_sc}",
-                    "IconPath": var_icon_path.get(),
-                    "IconColor": var_icon_color.get(),
-                    "Audio": aud_cfg.copy(),
-                    "Overlay": MACRO_TEMPLATE["Overlay"].copy()
-                }
-                
+        # разрываем старую связь, если она изменилась
+        if old_pair != "-1" and old_pair != new_pair and old_pair in MACRO_CONFIG:
+            MACRO_CONFIG[old_pair]["Pair"] = "-1"
+
+        # зеркалим настройки на парную кнопку и ставим обратную связь
+        if new_pair != "-1":
+            prev = MACRO_CONFIG.get(new_pair, {})
+            old_partner = str(prev.get("Pair", "-1"))
+            if old_partner not in ("-1", current_edit_sc) and old_partner in MACRO_CONFIG:
+                MACRO_CONFIG[old_partner]["Pair"] = "-1"   # партнёр уходит от своей старой пары
+            partner = {**MACRO_TEMPLATE, **prev}
+            partner.update({
+                "Pair": current_edit_sc,
+                "Type": "volume", "Language": "-1", "Path": "-1",
+                "ProcessName": var_proc.get(), "ActionTime": 0.0, "SecondActionTime": -1.0,
+                "AdminRights": 0, "VolumeDirection": -vd,
+                "VolumeTarget": _VT_CODES.get(var_vol_target.get(), "process"),
+                "Desc": f"Pair for {current_edit_sc}",
+                "VolumeMode": vm, "VolumeSteps": vsteps,
+                "IconPath": var_icon_path.get(), "IconColor": var_icon_color.get(),
+                "Audio": aud_cfg.copy(),
+            })
+            partner["Overlay"] = dict(prev.get("Overlay") or MACRO_TEMPLATE["Overlay"])
+            MACRO_CONFIG[new_pair] = partner
+
         save_config()
         show_main_screen()
 
     config_bottom_fr = tk.Frame(config_content, bg=MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#111111"))
     config_bottom_fr.pack(pady=30, fill=tk.X, padx=30)
-    RoundBtn(config_bottom_fr, text=tr("Назад"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 11), borderwidth=0, cursor="hand2", command=lambda: show_main_screen()).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5), ipady=6)
-    RoundBtn(config_bottom_fr, text=tr("Сохранить"), bg="#1db954", fg="#ffffff", font=("Segoe UI", 11, "bold"), borderwidth=0, cursor="hand2", command=save_button_click).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0), ipady=6)
+    RoundBtn(config_bottom_fr, text=tr("Back"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 11), borderwidth=0, cursor="hand2", command=lambda: show_main_screen()).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5), ipady=6)
+    RoundBtn(config_bottom_fr, text=tr("Save"), bg="#1db954", fg="#ffffff", font=("Segoe UI", 11, "bold"), borderwidth=0, cursor="hand2", command=save_button_click).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0), ipady=6)
 
 
     # ================= КОНСТРУКТОР ПРИЦЕЛОВ =================
@@ -1931,24 +2258,24 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         _ensure_dark_combobox_style()
 
         _bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020")
-        default_name = "По умолчанию"
+        default_name = "Default"
         presets = MACRO_CONFIG.setdefault("Crosshairs", {})
         if default_name not in presets:
             presets[default_name] = dict(DEFAULT_CONFIG["Crosshairs"][default_name])
         ch = dict(DEFAULT_CONFIG["Crosshairs"][default_name])
         ch.update(presets[default_name])
 
-        shape_names = {"cross": tr("Крест"), "t": tr("Т-образный"), "circle": tr("Круг"), "dot": tr("Точка")}
+        shape_names = {"cross": tr("Cross"), "t": tr("T-shape"), "circle": tr("Circle"), "dot": tr("Dot")}
         shape_codes = {v: k for k, v in shape_names.items()}
 
         def section(text, top=15):
             tk.Label(crosshair_content, text=text, fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=30, pady=(top, 0))
 
-        tk.Label(crosshair_content, text=tr("Конструктор прицела"), fg="#ffffff", bg=_bg, font=("Segoe UI", 16, "bold")).pack(anchor="w", padx=30, pady=(20, 10))
+        tk.Label(crosshair_content, text=tr("Crosshair designer"), fg="#ffffff", bg=_bg, font=("Segoe UI", 16, "bold")).pack(anchor="w", padx=30, pady=(20, 10))
 
         # --- предпросмотр на разных фонах ---
         PREVIEW = 100
-        preview_bgs = [(tr("Светлый"), "#d9d9d9"), (tr("Тёмный"), "#141414"), (tr("Пёстрый"), None)]
+        preview_bgs = [(tr("Light"), "#d9d9d9"), (tr("Dark"), "#141414"), (tr("Busy"), None)]
         preview_row = tk.Frame(crosshair_content, bg=_bg)
         preview_row.pack(fill=tk.X, padx=30, pady=(0, 10))
         preview_canvases, preview_imgs = {}, {}
@@ -1990,18 +2317,18 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 pass
 
         # --- 1. форма и геометрия ---
-        section(tr("1. Форма и геометрия"), top=5)
-        shape_var = tk.StringVar(value=shape_names.get(ch.get("shape", "cross"), tr("Крест")))
+        section(tr("1. Shape and geometry"), top=5)
+        shape_var = tk.StringVar(value=shape_names.get(ch.get("shape", "cross"), tr("Cross")))
         def on_shape(e=None):
             ch["shape"] = shape_codes.get(shape_var.get(), "cross")
             refresh_preview()
-        create_dropdown_row(crosshair_content, tr("Тип прицела"), shape_var, list(shape_codes.keys()), command=on_shape)
+        create_dropdown_row(crosshair_content, tr("Crosshair type"), shape_var, list(shape_codes.keys()), command=on_shape)
 
         dot_var = tk.BooleanVar(value=bool(ch.get("center_dot", True)))
         def on_dot():
             ch["center_dot"] = dot_var.get()
             refresh_preview()
-        create_switch_row(crosshair_content, tr("Точка в центре"), dot_var, command=on_dot)
+        create_switch_row(crosshair_content, tr("Center dot"), dot_var, command=on_dot)
 
         sliders = {}
         def add_slider(label, key, lo, hi):
@@ -2015,48 +2342,48 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             sl.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0))
             sliders[key] = (sl, val_lbl)
 
-        add_slider(tr("Размер точки (px)"), "dot_size", 1, 10)
-        add_slider(tr("Длина линий (px)"), "line_length", 0, 50)
-        add_slider(tr("Толщина линий (px)"), "line_thickness", 1, 10)
-        add_slider(tr("Зазор / отступ (px)"), "gap", -20, 30)
-        add_slider(tr("Угол поворота (°)"), "rotation", 0, 360)
+        add_slider(tr("Dot size (px)"), "dot_size", 1, 10)
+        add_slider(tr("Line length (px)"), "line_length", 0, 50)
+        add_slider(tr("Line thickness (px)"), "line_thickness", 1, 10)
+        add_slider(tr("Gap / offset (px)"), "gap", -20, 30)
+        add_slider(tr("Rotation angle (°)"), "rotation", 0, 360)
 
         # --- 2. цвет и прозрачность ---
-        section(tr("2. Цвет и прозрачность"))
+        section(tr("2. Color and opacity"))
         color_var = tk.StringVar(value=ch.get("color", "#1db954"))
-        create_color_row(crosshair_content, tr("Цвет прицела"), color_var)
+        create_color_row(crosshair_content, tr("Crosshair color"), color_var)
         def on_color(*_):
             ch["color"] = color_var.get(); refresh_preview()
         color_var.trace_add("write", on_color)
         sw_row = tk.Frame(crosshair_content, bg=_bg); sw_row.pack(fill=tk.X, padx=30, pady=(0, 5))
         for sw_hex in ("#1db954", "#00e5ff", "#ffee00", "#ff2d95", "#ffffff"):
             RoundBtn(sw_row, bg=sw_hex, activebackground=sw_hex, width=3, borderwidth=0, cursor="hand2", command=lambda c=sw_hex: color_var.set(c)).pack(side=tk.LEFT, padx=3)
-        add_slider(tr("Прозрачность (%)"), "opacity", 0, 100)
+        add_slider(tr("Opacity (%)"), "opacity", 0, 100)
 
         # --- 3. обводка ---
-        section(tr("3. Обводка"))
+        section(tr("3. Outline"))
         outline_var = tk.BooleanVar(value=bool(ch.get("outline_enabled", True)))
         def on_outline():
             ch["outline_enabled"] = outline_var.get(); refresh_preview()
-        create_switch_row(crosshair_content, tr("Включить обводку"), outline_var, command=on_outline)
-        add_slider(tr("Толщина обводки (px)"), "outline_thickness", 1, 5)
+        create_switch_row(crosshair_content, tr("Enable outline"), outline_var, command=on_outline)
+        add_slider(tr("Outline thickness (px)"), "outline_thickness", 1, 5)
         out_color_var = tk.StringVar(value=ch.get("outline_color", "#000000"))
-        create_color_row(crosshair_content, tr("Цвет обводки"), out_color_var)
+        create_color_row(crosshair_content, tr("Outline color"), out_color_var)
         def on_out_color(*_):
             ch["outline_color"] = out_color_var.get(); refresh_preview()
         out_color_var.trace_add("write", on_out_color)
-        add_slider(tr("Прозрачность обводки (%)"), "outline_opacity", 0, 100)
+        add_slider(tr("Outline opacity (%)"), "outline_opacity", 0, 100)
 
         # --- сохранённые прицелы ---
-        section(tr("Сохранённые прицелы"), top=20)
+        section(tr("Saved crosshairs"), top=20)
         name_var = tk.StringVar(value=default_name)
         name_row = tk.Frame(crosshair_content, bg=_bg); name_row.pack(fill=tk.X, padx=30, pady=8)
-        tk.Label(name_row, text=tr("Имя"), fg="#e8e8e8", bg=_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        tk.Label(name_row, text=tr("Name"), fg="#e8e8e8", bg=_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
         tk.Entry(name_row, textvariable=name_var, bg="#2d2d2d", fg="#ffffff", insertbackground="#ffffff", borderwidth=0, font=("Segoe UI", 10)).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0), ipady=5)
 
         load_var = tk.StringVar(value=default_name)
         load_row = tk.Frame(crosshair_content, bg=_bg); load_row.pack(fill=tk.X, padx=30, pady=8)
-        tk.Label(load_row, text=tr("Выбрать сохранённый"), fg="#e8e8e8", bg=_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        tk.Label(load_row, text=tr("Choose saved"), fg="#e8e8e8", bg=_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
         load_combo = ttk.Combobox(load_row, textvariable=load_var, state="readonly", font=("Segoe UI", 10), style="Dark.TCombobox")
         load_combo.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0), ipady=2)
 
@@ -2068,7 +2395,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         def populate(params):
             base = dict(DEFAULT_CONFIG["Crosshairs"][default_name]); base.update(params)
             ch.clear(); ch.update(base)
-            shape_var.set(shape_names.get(ch.get("shape", "cross"), tr("Крест")))
+            shape_var.set(shape_names.get(ch.get("shape", "cross"), tr("Cross")))
             dot_var.set(bool(ch["center_dot"])); outline_var.set(bool(ch["outline_enabled"]))
             color_var.set(ch["color"]); out_color_var.set(ch["outline_color"])
             for k, (sl, lbl) in sliders.items():
@@ -2078,41 +2405,41 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         def do_save():
             nm = name_var.get().strip()
             if not nm:
-                messagebox.showerror(tr("Прицел"), tr("Введите имя прицела.")); return
+                messagebox.showerror(tr("Crosshair"), tr("Enter a crosshair name.")); return
             MACRO_CONFIG.setdefault("Crosshairs", {})[nm] = dict(ch)
             save_config(); refresh_names(); load_var.set(nm)
-            messagebox.showinfo(tr("Прицел"), tr("Прицел «{}» сохранён.").format(nm))
+            messagebox.showinfo(tr("Crosshair"), tr("Crosshair “{}” saved.").format(nm))
 
         def do_load():
             nm = load_var.get()
             preset = MACRO_CONFIG.get("Crosshairs", {}).get(nm)
             if not preset:
-                messagebox.showerror(tr("Прицел"), tr("Такой прицел не найден.")); return
+                messagebox.showerror(tr("Crosshair"), tr("That crosshair was not found.")); return
             name_var.set(nm); populate(preset)
 
         def do_delete():
             nm = load_var.get()
             if nm == default_name:
-                messagebox.showerror(tr("Прицел"), tr("Прицел по умолчанию удалить нельзя.")); return
-            if nm in MACRO_CONFIG.get("Crosshairs", {}) and messagebox.askyesno(tr("Прицел"), tr("Удалить прицел «{}»?").format(nm)):
+                messagebox.showerror(tr("Crosshair"), tr("The default crosshair cannot be deleted.")); return
+            if nm in MACRO_CONFIG.get("Crosshairs", {}) and messagebox.askyesno(tr("Crosshair"), tr("Delete crosshair “{}”?").format(nm)):
                 del MACRO_CONFIG["Crosshairs"][nm]
                 save_config(); refresh_names()
 
         btn_row = tk.Frame(crosshair_content, bg=_bg); btn_row.pack(fill=tk.X, padx=30, pady=5)
-        RoundBtn(btn_row, text=tr("Сохранить"), bg="#1db954", fg="#000000", font=("Segoe UI", 10, "bold"), borderwidth=0, cursor="hand2", command=do_save).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 3), ipady=6)
-        RoundBtn(btn_row, text=tr("Загрузить"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=do_load).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=3, ipady=6)
-        RoundBtn(btn_row, text=tr("Удалить"), bg="#3a2020", fg="#ff8080", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=do_delete).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0), ipady=6)
+        RoundBtn(btn_row, text=tr("Save"), bg="#1db954", fg="#000000", font=("Segoe UI", 10, "bold"), borderwidth=0, cursor="hand2", command=do_save).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 3), ipady=6)
+        RoundBtn(btn_row, text=tr("Load"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=do_load).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=3, ipady=6)
+        RoundBtn(btn_row, text=tr("Delete"), bg="#3a2020", fg="#ff8080", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=do_delete).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0), ipady=6)
         refresh_names()
 
         # --- код прицела ---
-        section(tr("Код прицела"), top=20)
+        section(tr("Crosshair code"), top=20)
         def do_copy_code():
             try:
                 pyperclip.copy(encode_crosshair_code(ch))
-                messagebox.showinfo(tr("Прицел"), tr("Код скопирован в буфер обмена."))
+                messagebox.showinfo(tr("Crosshair"), tr("Code copied to clipboard."))
             except Exception:
-                messagebox.showerror(tr("Прицел"), tr("Не удалось скопировать код."))
-        RoundBtn(crosshair_content, text=tr("Скопировать код"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=do_copy_code).pack(fill=tk.X, padx=30, pady=5, ipady=6)
+                messagebox.showerror(tr("Crosshair"), tr("Could not copy the code."))
+        RoundBtn(crosshair_content, text=tr("Copy code"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=do_copy_code).pack(fill=tk.X, padx=30, pady=5, ipady=6)
 
         code_var = tk.StringVar()
         def do_apply_code():
@@ -2121,13 +2448,13 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 if not isinstance(params, dict): raise ValueError
                 populate(params)
             except Exception:
-                messagebox.showerror(tr("Прицел"), tr("Неверный или повреждённый код прицела."))
+                messagebox.showerror(tr("Crosshair"), tr("Invalid or corrupted crosshair code."))
         code_row = tk.Frame(crosshair_content, bg=_bg); code_row.pack(fill=tk.X, padx=30, pady=5)
         tk.Entry(code_row, textvariable=code_var, bg="#2d2d2d", fg="#ffffff", insertbackground="#ffffff", borderwidth=0, font=("Segoe UI", 9)).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
-        RoundBtn(code_row, text=tr("Применить код"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=do_apply_code).pack(side=tk.RIGHT, padx=(10, 0), ipadx=5, ipady=4)
+        RoundBtn(code_row, text=tr("Apply code"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=do_apply_code).pack(side=tk.RIGHT, padx=(10, 0), ipadx=5, ipady=4)
 
-        RoundBtn(crosshair_content, text=tr("Сбросить к значениям по умолчанию"), bg="#3a3a3a", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=lambda: populate(DEFAULT_CONFIG["Crosshairs"][default_name])).pack(fill=tk.X, padx=30, pady=(10, 5), ipady=6)
-        RoundBtn(crosshair_content, text=tr("Назад"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 11), borderwidth=0, cursor="hand2", command=lambda: show_main_screen()).pack(fill=tk.X, padx=30, pady=20, ipady=6)
+        RoundBtn(crosshair_content, text=tr("Reset to default values"), bg="#3a3a3a", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=lambda: populate(DEFAULT_CONFIG["Crosshairs"][default_name])).pack(fill=tk.X, padx=30, pady=(10, 5), ipady=6)
+        RoundBtn(crosshair_content, text=tr("Back"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 11), borderwidth=0, cursor="hand2", command=lambda: show_main_screen()).pack(fill=tk.X, padx=30, pady=20, ipady=6)
 
         refresh_preview()
         dev = MACRO_CONFIG.get("DevSettings", {})
@@ -2193,7 +2520,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
 
     def open_key_picker(on_pick):
         top = tk.Toplevel(ui_root)
-        top.title(tr("Выбор клавиши"))
+        top.title(tr("Choose key"))
         top.configure(bg="#202020")
         top.attributes("-topmost", True)
         top.resizable(False, False)
@@ -2201,7 +2528,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         W, H = int(23.2 * U) + 30, int(9.6 * U) + 110
         sw, sh = ui_root.winfo_screenwidth(), ui_root.winfo_screenheight()
         top.geometry(f"{W}x{H}+{max(0, (sw - W) // 2)}+{max(0, (sh - H) // 2)}")
-        tk.Label(top, text=tr("Нажмите на клавишу, чтобы добавить её в комбинацию"), fg="#e8e8e8", bg="#202020", font=("Segoe UI", 11)).pack(pady=(12, 6))
+        tk.Label(top, text=tr("Press a key to add it to the combination"), fg="#e8e8e8", bg="#202020", font=("Segoe UI", 11)).pack(pady=(12, 6))
         area = tk.Frame(top, bg="#202020")
         area.pack(padx=15, pady=5, fill=tk.BOTH, expand=True)
         def choose(name):
@@ -2212,7 +2539,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             b.place(x=int(x * U), y=int(y * U), width=int(w * U) - 3, height=int(h * U) - 3)
             b.bind("<Enter>", lambda e, b=b: b.config(bg="#3a3a3a"))
             b.bind("<Leave>", lambda e, b=b: b.config(bg="#2d2d2d"))
-        RoundBtn(top, text=tr("Отмена"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=top.destroy).pack(pady=(0, 12), ipadx=24, ipady=4)
+        RoundBtn(top, text=tr("Cancel"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=top.destroy).pack(pady=(0, 12), ipadx=24, ipady=4)
 
     def send_hotkey(keys):
         seq = [HK_VK[k] for k in keys if k in HK_VK]
@@ -2304,10 +2631,10 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
     def show_crosshair(name):
         params = MACRO_CONFIG.get("Crosshairs", {}).get(name)
         if not params:
-            show_osd(tr("Прицел не найден"))
+            show_osd(tr("Crosshair not found"))
             return False
         hide_crosshair()
-        base = dict(DEFAULT_CONFIG["Crosshairs"]["По умолчанию"]); base.update(params)
+        base = dict(DEFAULT_CONFIG["Crosshairs"]["Default"]); base.update(params)
         SZ = 200
         img = render_crosshair_image(base, size=SZ)
         l, t, r, b = _foreground_monitor_rect()
@@ -2344,25 +2671,25 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         if cr.get("mode") == "smart":
             names = [n for n in cr.get("list", []) if n in presets]
             if not names:
-                show_osd(tr("Прицел: список пуст"))
+                show_osd(tr("Crosshair: list is empty"))
                 return
             idx = ch_idx.get(sc, 0) % len(names)
             if is_second:
                 if crosshair_state["win"] is not None:
-                    hide_crosshair(); show_osd(tr("Прицел ВЫКЛ"))
+                    hide_crosshair(); show_osd(tr("Crosshair OFF"))
                 elif show_crosshair(names[idx]):
-                    ch_idx[sc] = idx; show_osd(tr("Прицел: {}").format(names[idx]))
+                    ch_idx[sc] = idx; show_osd(tr("Crosshair: {}").format(names[idx]))
             else:
                 idx = (idx + 1) % len(names)
                 ch_idx[sc] = idx
                 if crosshair_state["win"] is not None: show_crosshair(names[idx])
-                show_osd(tr("Прицел: {}").format(names[idx]))
+                show_osd(tr("Crosshair: {}").format(names[idx]))
         else:
             nm = cr.get("name") or next(iter(presets), "")
             if crosshair_state["win"] is not None and crosshair_state["name"] == nm:
-                hide_crosshair(); show_osd(tr("Прицел ВЫКЛ"))
+                hide_crosshair(); show_osd(tr("Crosshair OFF"))
             elif show_crosshair(nm):
-                show_osd(tr("Прицел: {}").format(nm))
+                show_osd(tr("Crosshair: {}").format(nm))
 
     def show_main_screen():
         ui_root.osd_preview_mode = False
@@ -2378,8 +2705,24 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         dev = MACRO_CONFIG.get("DevSettings", {})
         win_w, win_h = WIN_W, WIN_H
         pad = 14
-        settings_bg_frame.place(x=pad, y=pad, width=win_w-pad*2, height=win_h-pad*2)
-        settings_bg_frame.lift()
+        settings_bg_frame.update_idletasks()
+        _slide_in_up(settings_bg_frame, pad, win_w-pad*2, win_h-pad*2, pad, -win_h)   # сверху вниз
+
+    _slide_token = {"n": 0}
+    def _slide_in_up(frame, x, w, h, y_final, from_y, dur_ms=320):
+        """The window slides in on the same exponential curve as the popup."""
+        _slide_token["n"] += 1
+        tok = _slide_token["n"]
+        t0 = time.perf_counter()
+        frame.place(x=x, y=from_y, width=w, height=h)
+        frame.lift()
+        def tick():
+            if tok != _slide_token["n"] or not frame.winfo_manager(): return
+            t = min(1.0, (time.perf_counter() - t0) * 1000.0 / dur_ms)
+            f = (1 - 2 ** (-10 * t)) / _EXP_LIM
+            frame.place_configure(y=from_y + (y_final - from_y) * f)
+            if t < 1.0: ui_root.after(15, tick)
+        tick()
 
     def open_config_screen(sc):
         global current_edit_sc
@@ -2391,11 +2734,11 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         _bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#111111")
         config_canvas.config(bg=_bg)
         config_content.config(bg=_bg)
-        config_title.config(text=tr("Настройка {}").format(key_name), bg=_bg)
+        config_title.config(text=tr("Configure {}").format(key_name), bg=_bg)
         lbl_overlay_tip.config(bg=_bg)
         lbl_ch_tip.config(bg=_bg)
         
-        for r in [row_type, row_lang, row_path, row_proc, row_act, row_sec, row_admin, row_voldir, row_volpair, row_voltarget, row_icon_path, row_icon_color, row_ch_mode, row_ch_name, config_bottom_fr]:
+        for r in [row_type, row_lang, row_path, row_proc, row_act, row_sec, row_admin, row_voldir, row_volpair, row_voltarget, row_volmode, row_volsteps, row_icon_path, row_icon_color, row_ch_mode, row_ch_name, config_bottom_fr]:
             r.config(bg=_bg)
             for child in r.winfo_children():
                 if isinstance(child, tk.Frame): child.config(bg=_bg)
@@ -2413,8 +2756,12 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         var_proc.set(cfg.get("ProcessName", "spotify.exe") if cfg.get("ProcessName") != "-1" else "spotify.exe")
         var_act.set(str(cfg.get("ActionTime", 0)))
         var_sec.set(str(cfg.get("SecondActionTime", -1)) if cfg.get("SecondActionTime") != -1 else "")
+        var_clean_keep.set(cfg.get("CleanKeep", ""))
+        var_media.set(next((m[1] for m in MEDIA_KEYS if m[0] == cfg.get("MediaKey", "playpause")), MEDIA_KEYS[0][1]))
         var_admin_bool.set(True if cfg.get("AdminRights") == 1 else False)
         var_vol_dir.set("Up (+)" if cfg.get("VolumeDirection", 1) == 1 else "Down (-)")
+        var_vol_mode.set(_VM_STEPS if cfg.get("VolumeMode") == "steps" else _VM_SLIDER)
+        var_vol_steps.set(", ".join(str(x) for x in cfg.get("VolumeSteps", [0, 50, 100])))
         var_vol_target.set(next((k for k, v in _VT_CODES.items() if v == cfg.get("VolumeTarget", "process")), _VT_PROC))
         var_icon_path.set(cfg.get("IconPath", ""))
         var_icon_color.set(cfg.get("IconColor", "#ffffff"))
@@ -2431,10 +2778,11 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         ch_sel[:] = [n for n in cr.get("list", []) if n in ch_names]
         hotkey_list[:] = [str(k) for k in cfg.get("Hotkey", [])]
         
-        opts = [tr("Нет")] + [SC_NAMES[k] for k in SC_NAMES if k != current_edit_sc]
+        opts = [tr("None")] + [SC_NAMES[k] for k in SC_NAMES if k != current_edit_sc and k not in LOCKED_SC]
         row_volpair.winfo_children()[1].configure(values=opts)
-        var_vol_pair.set(tr("Нет"))
-        
+        _pair = str(cfg.get("Pair", "-1"))
+        var_vol_pair.set(SC_NAMES[_pair] if (cfg.get("Type") == "volume" and _pair in SC_NAMES and _pair != current_edit_sc) else tr("None"))
+
         refresh_config_ui()
         settings_bg_frame.place_forget()
         crosshair_bg_frame.place_forget()
@@ -2443,8 +2791,8 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         win_w, win_h = WIN_W, WIN_H
         pad = 14
         
-        config_bg_frame.place(x=pad, y=pad, width=win_w-pad*2, height=win_h-pad*2)
-        config_bg_frame.lift()
+        config_bg_frame.update_idletasks()   # сначала раскладка и отрисовка, потом показ
+        _slide_in_up(config_bg_frame, pad, win_w-pad*2, win_h-pad*2, pad, win_h)
 
     draw_numpad()
 
@@ -2690,7 +3038,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
     def force_osd_preview():
         try:
             scale = MACRO_CONFIG["AppSettings"].get("osd_scale", 1.0)
-            _osd_show(render_osd_image(tr("ПРЕВЬЮ 65%"), None, False, 0.65, scale), auto_hide=False)
+            _osd_show(render_osd_image(tr("PREVIEW 65%"), None, False, 0.65, scale), auto_hide=False)
         except Exception:
             traceback.print_exc()
 
@@ -2719,7 +3067,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
 
     # ================= ЗВУК ПРИ СРАБАТЫВАНИИ КНОПКИ =================
     # Файл action1.mp4 (или .mp3/.wav/.m4a) лежит рядом со скриптом. Играет через
-    # системный MCI; каждое срабатывание берёт свободный "канал" из пула, поэтому
+    # системный MCI; каждое срабатывание берёт свободный "channel" из пула, поэтому
     # новый звук не обрывает предыдущий. Если MCI не умеет такой файл — запасной
     # плеер на PowerShell (тоже с наложением). Громкость — настройка приложения.
     _snd = {"q": queue.Queue(), "thread": None}
@@ -2823,7 +3171,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
     def tray_quit(icon, item): 
         icon.stop(); os._exit(0)
 
-    menu = pystray.Menu(item(tr('Настройки'), tray_show_ui, default=True), item(tr('Выход'), tray_quit))
+    menu = pystray.Menu(item(tr('Settings'), tray_show_ui, default=True), item(tr('Exit'), tray_quit))
     tray_icon = pystray.Icon("numbinder", create_tray_image(), "numbinder", menu)
     threading.Thread(target=tray_icon.run, daemon=True).start()
 
@@ -2882,7 +3230,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             
         cfg = MACRO_CONFIG[sc].get("Overlay", {})
         if not cfg.get("path") or not os.path.exists(cfg["path"]):
-            if not force_show: show_osd(tr("Оверлей: Нет картинки")); return
+            if not force_show: show_osd(tr("Overlay: no image")); return
             
         win = tk.Toplevel(ui_root)
         win.overrideredirect(True)
@@ -2919,18 +3267,18 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         win.after(50, apply_style)
         
         refresh_overlay(sc)
-        if not force_show: show_osd(tr("Оверлей ВКЛ"))
+        if not force_show: show_osd(tr("Overlay ON"))
 
     def open_overlay_settings(sc):
         cfg = MACRO_CONFIG[sc].setdefault("Overlay", MACRO_TEMPLATE["Overlay"].copy())
         
         top = tk.Toplevel(ui_root)
-        top.title(tr("Студия Оверлея"))
+        top.title(tr("Overlay studio"))
         top.geometry("380x580")
         top.attributes("-topmost", True)
         top.configure(bg="#1e1e1e")
         
-        tk.Label(top, text=tr("СТУДИЯ ОВЕРЛЕЯ"), fg="#1db954", bg="#1e1e1e", font=("Consolas", 14, "bold")).pack(pady=(15, 10))
+        tk.Label(top, text=tr("OVERLAY STUDIO"), fg="#1db954", bg="#1e1e1e", font=("Consolas", 14, "bold")).pack(pady=(15, 10))
         
         toggle_overlay(sc, force_show=True)
         
@@ -2938,10 +3286,10 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             if sc in active_overlays: refresh_overlay(sc)
             
         fr_path = tk.Frame(top, bg="#1e1e1e"); fr_path.pack(fill=tk.X, padx=20, pady=5)
-        tk.Label(fr_path, text=tr("Картинка:"), fg="#ccc", bg="#1e1e1e").pack(side=tk.LEFT)
-        btn_path = RoundBtn(fr_path, text=tr("Выбрать..."), bg="#333", fg="#fff", bd=0, cursor="hand2")
+        tk.Label(fr_path, text=tr("Image:"), fg="#ccc", bg="#1e1e1e").pack(side=tk.LEFT)
+        btn_path = RoundBtn(fr_path, text=tr("Browse..."), bg="#333", fg="#fff", bd=0, cursor="hand2")
         btn_path.pack(side=tk.RIGHT)
-        lbl_path = tk.Label(top, text=os.path.basename(cfg["path"]) or tr("Не выбрано"), fg="#888", bg="#1e1e1e")
+        lbl_path = tk.Label(top, text=os.path.basename(cfg["path"]) or tr("Not selected"), fg="#888", bg="#1e1e1e")
         lbl_path.pack(padx=20)
         
         def pick_img():
@@ -3012,10 +3360,10 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         var_blend = tk.StringVar(value=cfg.get("blend", "black"))
         
         sw, sh = ui_root.winfo_screenwidth(), ui_root.winfo_screenheight()
-        var_x = add_slider(tr("Позиция X"), "x", 0, sw)
-        var_y = add_slider(tr("Позиция Y"), "y", 0, sh)
-        var_w = add_slider(tr("Ширина"), "w", 10, sw*2)
-        var_h = add_slider(tr("Высота"), "h", 10, sh*2)
+        var_x = add_slider(tr("Position X"), "x", 0, sw)
+        var_y = add_slider(tr("Position Y"), "y", 0, sh)
+        var_w = add_slider(tr("Width"), "w", 10, sw*2)
+        var_h = add_slider(tr("Height"), "h", 10, sh*2)
         var_a = add_slider("Opacity %", "alpha", 1, 100)
         
         def update_interactive():
@@ -3035,24 +3383,24 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             redraw()
 
         fr_check1 = tk.Frame(top, bg="#1e1e1e"); fr_check1.pack(fill=tk.X, padx=20, pady=(5,0))
-        tk.Checkbutton(fr_check1, text=tr("Пропорции"), variable=var_lock, bg="#1e1e1e", fg="#ccc", selectcolor="#333", activebackground="#1e1e1e", command=lambda: cfg.update({"lock_aspect": var_lock.get()})).pack(side=tk.LEFT)
-        tk.Checkbutton(fr_check1, text=tr("Интерактивное"), variable=var_interactive, bg="#1e1e1e", fg="#ccc", selectcolor="#333", activebackground="#1e1e1e", command=update_interactive).pack(side=tk.RIGHT)
+        tk.Checkbutton(fr_check1, text=tr("Aspect ratio"), variable=var_lock, bg="#1e1e1e", fg="#ccc", selectcolor="#333", activebackground="#1e1e1e", command=lambda: cfg.update({"lock_aspect": var_lock.get()})).pack(side=tk.LEFT)
+        tk.Checkbutton(fr_check1, text=tr("Interactive"), variable=var_interactive, bg="#1e1e1e", fg="#ccc", selectcolor="#333", activebackground="#1e1e1e", command=update_interactive).pack(side=tk.RIGHT)
 
         fr_check2 = tk.Frame(top, bg="#1e1e1e"); fr_check2.pack(fill=tk.X, padx=20, pady=(0,0))
-        tk.Checkbutton(fr_check2, text=tr("Сглаживание"), variable=var_smooth, bg="#1e1e1e", fg="#ccc", selectcolor="#333", activebackground="#1e1e1e", command=update_render_opts).pack(side=tk.LEFT)
-        tk.Checkbutton(fr_check2, text=tr("Резкие края (Alpha)"), variable=var_fix_alpha, bg="#1e1e1e", fg="#ccc", selectcolor="#333", activebackground="#1e1e1e", command=update_render_opts).pack(side=tk.RIGHT)
+        tk.Checkbutton(fr_check2, text=tr("Smoothing"), variable=var_smooth, bg="#1e1e1e", fg="#ccc", selectcolor="#333", activebackground="#1e1e1e", command=update_render_opts).pack(side=tk.LEFT)
+        tk.Checkbutton(fr_check2, text=tr("Hard edges (Alpha)"), variable=var_fix_alpha, bg="#1e1e1e", fg="#ccc", selectcolor="#333", activebackground="#1e1e1e", command=update_render_opts).pack(side=tk.RIGHT)
 
         fr_blend = tk.Frame(top, bg="#1e1e1e"); fr_blend.pack(fill=tk.X, padx=20, pady=(5,0))
-        tk.Label(fr_blend, text=tr("Наложение:"), fg="#ccc", bg="#1e1e1e").pack(side=tk.LEFT)
+        tk.Label(fr_blend, text=tr("Blend:"), fg="#ccc", bg="#1e1e1e").pack(side=tk.LEFT)
         
         def on_blend_change(*args):
             b_val = var_blend.get()
-            b_map = {tr("Обычное (Black Key)"): "black", tr("Светлое (White Key)"): "white", tr("Хромакей (Magenta)"): "magenta"}
+            b_map = {tr("Normal (Black Key)"): "black", tr("Light (White Key)"): "white", tr("Chroma key (Magenta)"): "magenta"}
             cfg["blend"] = b_map.get(b_val, "black")
             redraw()
             
-        blend_opts = [tr("Обычное (Black Key)"), tr("Светлое (White Key)"), tr("Хромакей (Magenta)")]
-        current_blend_str = [k for k, v in {tr("Обычное (Black Key)"): "black", tr("Светлое (White Key)"): "white", tr("Хромакей (Magenta)"): "magenta"}.items() if v == cfg.get("blend", "black")][0]
+        blend_opts = [tr("Normal (Black Key)"), tr("Light (White Key)"), tr("Chroma key (Magenta)")]
+        current_blend_str = [k for k, v in {tr("Normal (Black Key)"): "black", tr("Light (White Key)"): "white", tr("Chroma key (Magenta)"): "magenta"}.items() if v == cfg.get("blend", "black")][0]
         var_blend.set(current_blend_str)
         
         cb_blend = ttk.Combobox(fr_blend, textvariable=var_blend, values=blend_opts, state="readonly", width=20)
@@ -3073,7 +3421,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             save_config()
             top.destroy()
         
-        RoundBtn(top, text=tr("ГОТОВО"), bg="#1db954", fg="#fff", font=("Consolas", 12, "bold"), bd=0, cursor="hand2", command=close_editor).pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=20, ipady=8)
+        RoundBtn(top, text=tr("DONE"), bg="#1db954", fg="#fff", font=("Consolas", 12, "bold"), bd=0, cursor="hand2", command=close_editor).pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=20, ipady=8)
 
     def restart_script():
         global hook_id
@@ -3127,7 +3475,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)   # старые версии
         return ctypes.cast(iface, ctypes.POINTER(IAudioEndpointVolume))
 
-    def change_vol(d, target_proc="spotify.exe", mode="process"):
+    def change_vol(d, target_proc="spotify.exe", mode="process", levels=None):
         delay = 120
         try:
             import comtypes
@@ -3164,12 +3512,18 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 else:
                     step = aud.get("high_step", 3) / 100.0
                     delay = aud.get("high_delay", 100)
-                new_v = max(0.0, min(lim, round(curr + (step * d), 3)))
+                if levels:
+                    # режим точек: переходим к следующей точке по кругу (0% → 50% → 100% → 0%)
+                    cur_pct = curr * 100
+                    nxt = next((l for l in levels if l > cur_pct + 0.5), levels[0])
+                    new_v = max(0.0, min(lim, round(nxt / 100.0, 3)))
+                else:
+                    new_v = max(0.0, min(lim, round(curr + (step * d), 3)))
                 set_v(new_v)
                 prog_disp = new_v / lim if lim > 0 else 0
                 pct = f"{int(round(new_v * 100))}%"
                 if mode == "system":
-                    show_osd(tr("Система: {}").format(pct), progress=prog_disp)
+                    show_osd(tr("System: {}").format(pct), progress=prog_disp)
                 else:
                     base = app_name.rsplit(".", 1)[0] if app_name else ""
                     msg = pct if mode == "process" else (f"{base}: {pct}" if base else pct)
@@ -3188,7 +3542,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                   "FRA": 0x040C040C, "ESP": 0x0C0A0C0A, "UKR": 0x04220422}
 
     def switch_layout_cycle(lang_str):
-        """Переключает раскладку активного окна на следующий язык из списка по кругу."""
+        """Switches the layout of the active window to the next language in the list, cycling."""
         names = [x.strip().upper() for x in (lang_str or "").split(",") if x.strip().upper() in LANG_CODES]
         if not names: return None
         hwnd = ctypes.windll.user32.GetForegroundWindow()
@@ -3200,6 +3554,53 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         ctypes.windll.user32.PostMessageW(hwnd, 0x0050, 0, LANG_CODES[nxt])
         return nxt
 
+    # clean2;0: эти процессы никогда не закрываются (системные, сама программа, интерпретатор)
+    CLEAN_PROTECTED = {
+        "explorer.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe", "searchhost.exe",
+        "searchapp.exe", "runtimebroker.exe", "sihost.exe", "ctfmon.exe", "taskhostw.exe", "dwm.exe",
+        "textinputhost.exe", "applicationframehost.exe", "fontdrvhost.exe", "conhost.exe", "cmd.exe",
+        "powershell.exe", "pwsh.exe", "windowsterminal.exe", "securityhealthsystray.exe", "smartscreen.exe",
+        "audiodg.exe", "dllhost.exe", "wmiprvse.exe", "svchost.exe", "lockapp.exe", "systemsettings.exe",
+        "widgets.exe", "csrss.exe", "winlogon.exe", "services.exe", "lsass.exe", "smss.exe", "wininit.exe",
+        "spoolsv.exe", "msmpeng.exe", "nissrv.exe", "system", "registry", "memory compression", "idle",
+        "python.exe", "pythonw.exe", "numbinder.exe",
+    }
+
+    def _press_media_key(key):
+        """Taps a media key (play/pause, next, prev, stop, mute) as a real keyboard event."""
+        vk = next((m[2] for m in MEDIA_KEYS if m[0] == key), MEDIA_KEYS[0][2])
+        u32 = ctypes.windll.user32
+        u32.keybd_event(vk, 0, 0, 0)
+        time.sleep(0.02)
+        u32.keybd_event(vk, 0, 0x0002, 0)
+
+    def _parse_clean_keep(text):
+        """'discord, telegram.exe' -> {'discord.exe', 'telegram.exe'} (lower case)."""
+        out = set()
+        for part in re.split(r"[,;\n]+", text or ""):
+            name = part.strip().lower()
+            if not name: continue
+            if not name.endswith(".exe"): name += ".exe"
+            out.add(name)
+        return out
+
+    def clean_processes(keep=frozenset()):
+        """clean2;0: closes the current user's apps, except system, protected and user-excluded ones."""
+        me = os.getpid()
+        try: my_user = psutil.Process(me).username()
+        except Exception: my_user = None
+        closed = 0
+        for p in psutil.process_iter(["pid", "name", "username"]):
+            try:
+                name = (p.info.get("name") or "").lower()
+                if not name or p.info["pid"] in (0, 4, me) or name in CLEAN_PROTECTED or name in keep: continue
+                if my_user and p.info.get("username") != my_user: continue
+                p.kill()
+                closed += 1
+            except Exception:
+                pass
+        show_osd(f"clean2;0: {closed}")
+
     def execute_action(sc, cfg, is_second_action=False):
         t = cfg.get("Type")
         if t and t != "none": play_action_sound()
@@ -3209,14 +3610,17 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             else: manage_app(proc_name, path, run_as_user=not admin, action='launch')
         elif t == "lang" and not is_second_action:
             nxt = switch_layout_cycle(cfg.get("Language", ""))
-            if nxt: show_osd(tr("🌐 Язык: {}").format(nxt))
-        elif t and t.startswith("mod:") and not is_second_action:
+            if nxt: show_osd(tr("🌐 Layout: {}").format(nxt))
+        elif t == "clean" and is_second_action:
+            threading.Thread(target=clean_processes, args=(_parse_clean_keep(cfg.get("CleanKeep", "")),), daemon=True).start()
+        elif t and t.startswith("mod:") and (not is_second_action or MODULES.get(t[4:], {}).get("info", {}).get("hold")):
             mid = t[4:]
             m = MODULES.get(mid)
             if not m:
                 show_osd(f"✗ module '{mid}' not found")
             else:
                 ctx = ModuleContext(mid)
+                ctx.is_hold = bool(is_second_action)
                 def _run_module(m=m, cfg=cfg, ctx=ctx):
                     try: m["run"](ctx, cfg)
                     except Exception as e:
@@ -3224,7 +3628,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                         ctx.osd(f"✗ {ctx.module_id}: {e}")
                 threading.Thread(target=_run_module, daemon=True).start()
         elif t == "restart" and not is_second_action: restart_script()
-        elif t == "dev patch" and not is_second_action: ui_root.after(0, apply_patch_from_clipboard)
+        elif t == "media" and not is_second_action: _press_media_key(cfg.get("MediaKey", "playpause"))
         elif t == "overlay":
             if is_second_action: ui_root.after(0, lambda: open_overlay_settings(sc))
             else: ui_root.after(0, lambda: toggle_overlay(sc))
@@ -3250,6 +3654,12 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 vol_target = cfg.get("ProcessName", "spotify.exe")
                 vol_mode = cfg.get("VolumeTarget", "process")
                 vol_audio_cfg = cfg.get("Audio", MACRO_TEMPLATE["Audio"].copy())
+                if cfg.get("VolumeMode") == "steps":
+                    pts = sorted({int(x) for x in cfg.get("VolumeSteps", []) if str(x).lstrip("-").isdigit()})
+                    if pts:
+                        # режим точек: одно нажатие — один шаг, держать не нужно
+                        threading.Thread(target=change_vol, args=(0, vol_target, vol_mode, pts), daemon=True).start()
+                        return
                 if not vol_thread or not vol_thread.is_alive():
                     vol_thread = threading.Thread(target=volume_repeater, daemon=True); vol_thread.start()
             return
@@ -3320,6 +3730,8 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
     threading.Thread(target=hook_thread, daemon=True).start()
     
     show_osd(f"🚀 numbinder {VERSION}")
+    ui_root.after(2000, _maybe_show_whats_new)
+    ui_root.after(8000, _periodic_update_check)
     _runlog("mainloop start")
     _runlog(f"SOUND FILE: {_find_action_sound()}")
     ui_root.mainloop()
@@ -3327,4 +3739,4 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
 
 except BaseException as e:
     _runlog("STARTUP EXCEPTION:\n" + traceback.format_exc())
-    ctypes.windll.user32.MessageBoxW(0, _crash_text("Ошибка запуска:", "Startup error:") + f"\n{e}\n\n" + _crash_text("Смотри папку crashlogs", "See the crashlogs folder"), "numbinder Crash", 0x10)
+    ctypes.windll.user32.MessageBoxW(0, _crash_text("Launch error:", "Startup error:") + f"\n{e}\n\n" + _crash_text("See the crashlogs folder", "See the crashlogs folder"), "numbinder Crash", 0x10)
