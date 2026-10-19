@@ -15,7 +15,7 @@ own script from a module.
 
 ## Download ↓↓↓
 
-[numbinder latest ver.](https://github.com/giozzik/numbinder/archive/refs/tags/v1.31.2.zip)
+[numbinder latest ver.](https://github.com/giozzik/numbinder/archive/refs/tags/v1.32.0.zip)
 
 that's the latest version, don't forget to read [INSTALL.txt](INSTALL.txt) 
 or at least drop it in AI and ask it to tell you what to do
