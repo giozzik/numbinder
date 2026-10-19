@@ -2,12 +2,11 @@
 
 **Turn your numpad into a set of smart buttons for Windows.**
 
-numbinder shows a clean on-screen numpad. Press a key and it runs a macro:
+numbinder makes a use of numpad. Press a key and it runs a macro:
 open an app, control volume, fix a typed layout, play a sound, or run your
 own script from a module.
 
 - Works in the background, sits in the system tray
-- English and Russian interface
 - Modules you can install or write yourself
 - Automatic updates from GitHub, with your permission
 
