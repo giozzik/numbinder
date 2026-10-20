@@ -1,7 +1,8 @@
 numbinder modules guide
 =======================
 
-A module is a single Python file (.py) in C:\numbinder\modules\.
+A module is a single Python file (.py) in the modules\ folder next to
+numbinder.pyw.
 
 numbinder loads it at startup and adds it to the button "Type" list, marked with 🧩.
 
@@ -16,7 +17,7 @@ programs, read the clipboard and send keys. Install only code you trust.
 From the app: Settings -> Modules -> "Install module...".
 The first time, a warning window appears. You must accept it before installing.
 
-By hand: copy the .py file into C:\numbinder\modules\ and restart numbinder.
+By hand: copy the .py file into the modules\ folder and restart numbinder.
 
 Then select the module in the button's "Type" field (it starts with 🧩).
 
@@ -31,9 +32,10 @@ Required structure:
     MODULE = {
         "id": "my_module",                                  # unique, no spaces
         "name": {"ru": "My module", "en": "My module"},    # shown in the list
-        "description": {"ru": "What the module does.", "en": "What the module does."},          # optional
+        "description": {"ru": "What the module does.", "en": "What the module does."},   # optional
         "version": "1.0.0",                                 # optional
         "author": "you",                                    # optional
+        "hold": True,                                       # optional, see below
     }
 
     def run(ctx, cfg):
@@ -42,6 +44,13 @@ Required structure:
 If the file has no MODULE with an "id", or no run() function, the module is
 skipped and the error is written to the log.
 
+"hold": True gives the module a second mode. A short press runs it as usual.
+Holding the button (for the "Hold To Action" time) runs it again with
+ctx.is_hold = True. Without "hold", the module runs only on a short press.
+
+The "description" in English is shown under the Type field in the button
+settings.
+
 
 3. HELPERS (ctx)
 ----------------
@@ -49,6 +58,7 @@ skipped and the error is written to the log.
     ctx.log("text")         write a line to this run's log
     ctx.settings()          the module's own settings dictionary (saved in config.json)
     ctx.save_settings()     save config.json after changing ctx.settings()
+    ctx.is_hold             True when the run was started by holding the button
 
 cfg holds the button's own settings: cfg.get("Type"), cfg.get("Path"),
 cfg.get("ProcessName"), and so on.
@@ -67,6 +77,8 @@ For others, run: python -m pip install package_name
 5. EXAMPLE
 ----------
 modules\layout_fixer.py is the built-in layout fixer. Use it as a reference.
+It uses "hold": True: a short press fixes all text in the field, holding the
+button fixes only the selected text.
 
 
 6. TIPS

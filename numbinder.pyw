@@ -74,6 +74,15 @@ import os
 import re
 import base64
 import webbrowser
+import collections
+
+# Windows timers tick every 15.6 ms by default, so Tk's after(16) really waits ~31 ms (~30 fps).
+# 1 ms resolution lets animations run at a real ~60 fps.
+try:
+    ctypes.windll.winmm.timeBeginPeriod(1)
+    atexit.register(lambda: ctypes.windll.winmm.timeEndPeriod(1))
+except Exception:
+    pass
 
 try:
     import psutil
@@ -105,10 +114,31 @@ try:
         sys.exit(0)
 
     # ================= НАСТРОЙКИ =================
-    VERSION = "v1.32.0"
-    BUILD = 10                    # номер сборки: растёт на 1 при каждом релизе
+    VERSION = "v1.36.0"
+    BUILD = 20                    # номер сборки: растёт на 1 при каждом релизе
     GH_REPO = "giozzik/numbinder"
     CHANGELOG = [
+        ("v1.36.0", ["New button type: Microphone mute. Mutes the default mic in all apps at once.",
+                     "Modes: toggle (press), push to talk (hold), push to mute (hold)."]),
+        ("v1.35.0", ["Smoother interface: animations run at ~60 fps (1 ms Windows timer).",
+                     "Hover animation uses cached frames instead of re-blurring the glow every frame.",
+                     "Animation speed no longer depends on frame rate; mouse moves are coalesced."]),
+        ("v1.34.1", ["Fixed: the Enable anyway button was cut off in the Extended keyboard warning."]),
+        ("v1.34.0", ["Experimental: Extended keyboard (Settings → Experimental). Bind F-keys, arrows, Insert…Page Down, Right Alt and Right Ctrl.",
+                     "With it on, the main window grows to the left and shows a red warning plate."]),
+        ("v1.33.2", ["Numpad Enter can now be used as a button, like the other numpad keys."]),
+        ("v1.33.1", ["Fixed: Launch app opened the numbinder folder when no path was set.",
+                     "The app path is filled in from the picked app; a missing path shows a message."]),
+        ("v1.33.0", ["Launch\\Close app: several actions per button (hold N sec or press N times).",
+                     "Hold: the hold time closest to yours runs on release. Multiple hold times supported.",
+                     "New actions: Launch app, Close process, Restart app, Minimize to tray.",
+                     "Old settings are converted automatically."]),
+        ("v1.32.3", ["Fixed: the window no longer jitters left and right while dragging.",
+                     "Fixed the same jitter when dragging an overlay."]),
+        ("v1.32.2", ["One app picker for exec, volume and clean2;0 keep-open list.",
+                     "Picker shows app names and icons; apps that are not running come from the Start menu."]),
+        ("v1.32.1", ["Start with Windows: Task Scheduler task without the 72-hour limit, errors are shown.",
+                     "Start with Windows: second way via the Startup folder, see \"other ways\"."]),
         ("v1.32.0", ["New button type: Media control (play/pause, next, previous, stop, mute).",
                      "Type descriptions fit the panel width."]),
         ("v1.31.9", ["Settings: buttons no longer squeezed, Back moved to the top.",
@@ -196,7 +226,12 @@ try:
         "71": "7", "72": "8", "73": "9", "78": "+",
         "75": "4", "76": "5", "77": "6",
         "79": "1", "80": "2", "81": "3", "284": "ENT",
-        "82": "0", "83": "."
+        "82": "0", "83": ".",
+        # extended keyboard (experimental): F-row, Ins..PgDn, arrows, RAlt, RCtrl
+        "59": "F1", "60": "F2", "61": "F3", "62": "F4", "63": "F5", "64": "F6",
+        "65": "F7", "66": "F8", "67": "F9", "68": "F10", "87": "F11", "88": "F12",
+        "338": "INS", "327": "HOME", "329": "PGUP", "339": "DEL", "335": "END", "337": "PGDN",
+        "328": "↑", "331": "←", "336": "↓", "333": "→", "312": "RALT", "285": "RCTRL",
     }
 
     MACRO_TEMPLATE = {
@@ -361,7 +396,7 @@ try:
 
     TYPE_DESCRIPTIONS = {
         "none": "No action. The button is only a placeholder.",
-        "exec": "Launches an app or file. Set the path and the process name. Hold runs the second action.",
+        "exec": "Launches or closes an app. Add several actions: press once, press N times in a row, or hold for N seconds.",
         "lang": "Switches the keyboard layout to the next one in the language list.",
         "volume": "Changes the volume of an app or the system. Use Pair Button to link an up and a down button.",
         "restart": "Restarts numbinder.",
@@ -370,6 +405,7 @@ try:
         "light macro": "Presses the key combination (hotkey) you record.",
         "clean": "clean2;0: on hold, closes your running apps. Use Keep open to list apps that must stay open.",
         "media": "Presses a media key: play/pause, next or previous track, stop or mute. Works with any player.",
+        "mic": "Mutes your default microphone in all apps at once (Discord, games, calls). Toggle, push to talk or push to mute.",
     }
     # (config key, label, Windows virtual-key code)
     MEDIA_KEYS = [("playpause", "Play / Pause", 0xB3), ("next", "Next track", 0xB0),
@@ -386,7 +422,7 @@ try:
         """Friendly button type names (config keys stay the same)."""
         return {
             "none": _L("None", "None"),
-            "exec": _L("Launch app", "Launch app"),
+            "exec": _L("Launch\\Close app", "Launch\\Close app"),
             "lang": _L("Switch layout", "Switch layout"),
             "volume": _L("Volume", "Volume"),
             "restart": _L("Restart numbinder", "Restart numbinder"),
@@ -395,6 +431,7 @@ try:
             "light macro": _L("Simple macro", "Simple macro"),
             "clean": _L("clean2;0 — close extra processes", "clean2;0 — close extra processes"),
             "media": _L("Media control", "Media control"),
+            "mic": _L("Microphone mute", "Microphone mute"),
         }
 
     def type_to_label(t):
@@ -659,18 +696,114 @@ try:
 
     ui_root.after(100, apply_native_style)
 
-    def toggle_task_scheduler(enable):
-        task_name = "numbinderAutoStart"
-        exe_path = sys.executable.replace("python.exe", "pythonw.exe")
-        working_dir = os.path.dirname(script_path)
+    AUTOSTART_TASK = "numbinderAutoStart"
+    _NOWIN = 0x08000000
+
+    def _autostart_exe():
+        return sys.executable.replace("python.exe", "pythonw.exe")
+
+    def task_exists():
+        r = subprocess.run(["schtasks", "/query", "/tn", AUTOSTART_TASK], capture_output=True, creationflags=_NOWIN)
+        return r.returncode == 0
+
+    def task_enable():
+        """Option 1: Task Scheduler task at logon. PowerShell is used so the task has no 72-hour limit and runs on battery."""
+        q = lambda x: str(x).replace("'", "''")
+        ps = (f"$a = New-ScheduledTaskAction -Execute '{q(_autostart_exe())}' -Argument '\"{q(script_path)}\"' -WorkingDirectory '{q(os.path.dirname(script_path))}'; "
+              f"$t = New-ScheduledTaskTrigger -AtLogOn -User '{q(os.environ.get('USERNAME', ''))}'; "
+              f"$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0); "
+              f"Register-ScheduledTask -TaskName '{AUTOSTART_TASK}' -Action $a -Trigger $t -Settings $s -Force | Out-Null")
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                           capture_output=True, text=True, creationflags=_NOWIN)
+        msg = (r.stderr or r.stdout or "").strip()
+        return r.returncode == 0, msg[:300]
+
+    def task_disable():
+        subprocess.run(["schtasks", "/delete", "/tn", AUTOSTART_TASK, "/f"], capture_output=True, creationflags=_NOWIN)
+
+    def startup_file():
+        return os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "numbinder_autostart.cmd")
+
+    def startup_enable():
+        """Option 2: a small .cmd file in the Startup folder. No admin rights, no Task Scheduler."""
         try:
-            if enable:
-                cmd = f'schtasks /create /tn "{task_name}" /tr "\\"{exe_path}\\" \\"{script_path}\\"" /sc onlogon /f'
-                subprocess.run(cmd, shell=True, creationflags=0x08000000, cwd=working_dir)
-            else:
-                cmd = f'schtasks /delete /tn "{task_name}" /f'
-                subprocess.run(cmd, shell=True, creationflags=0x08000000)
-        except Exception as e: pass
+            with open(startup_file(), "w", encoding="utf-8") as f:
+                f.write("@echo off\r\n")
+                f.write(f'cd /d "{os.path.dirname(script_path)}"\r\n')
+                f.write(f'start "" "{_autostart_exe()}" "{script_path}"\r\n')
+            return True, startup_file()
+        except Exception as e:
+            return False, str(e)
+
+    def startup_disable():
+        try:
+            if os.path.exists(startup_file()): os.remove(startup_file())
+        except Exception:
+            pass
+
+    def autostart_active():
+        return task_exists() or os.path.exists(startup_file())
+
+    def toggle_task_scheduler(enable):
+        """Returns (ok, message). Used by the Start with Windows switch (option 1)."""
+        if enable:
+            return task_enable()
+        task_disable()
+        return True, ""
+
+    def show_autostart_help(msg=""):
+        win = tk.Toplevel(ui_root)
+        win.title("Start with Windows")
+        win.configure(bg="#111111")
+        win.geometry("420x440")
+        win.transient(ui_root)
+        bg_c = "#111111"
+        tk.Label(win, text=_L("Start with Windows", "Start with Windows"), fg="#ffffff", bg=bg_c, font=("Segoe UI", 15, "bold")).pack(anchor="w", padx=24, pady=(18, 4))
+        tk.Label(win, text="Not starting with system? Pick one of the two ways below.", fg="#aaaaaa", bg=bg_c, font=("Segoe UI", 10), wraplength=370, justify=tk.LEFT).pack(anchor="w", padx=24)
+        status = tk.Label(win, text=msg, fg="#f5d142", bg=bg_c, font=("Segoe UI", 9), wraplength=370, justify=tk.LEFT)
+        status.pack(anchor="w", padx=24, pady=(8, 0))
+
+        def card(title, text, is_on, toggle):
+            box = tk.Frame(win, bg="#1e1e1e")
+            box.pack(fill=tk.X, padx=24, pady=8)
+            tk.Label(box, text=title, fg="#ffffff", bg="#1e1e1e", font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
+            tk.Label(box, text=text, fg="#bbbbbb", bg="#1e1e1e", font=("Segoe UI", 9), wraplength=340, justify=tk.LEFT).pack(anchor="w", padx=14)
+            st = tk.Label(box, text="● on" if is_on() else "○ off", fg="#1db954" if is_on() else "#888888", bg="#1e1e1e", font=("Segoe UI", 9, "bold"))
+            st.pack(anchor="w", padx=14, pady=(4, 2))
+            btn_txt = tr("Turn off") if is_on() else tr("Turn on")
+            def act():
+                ok, m = toggle(not is_on())
+                status.config(text=m if not ok else "")
+                if not ok: status.config(text="Failed: " + m)
+                win.destroy(); show_autostart_help(status.cget("text"))
+                sync_autostart_switch()
+            RoundBtn(box, text=btn_txt, bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=act).pack(fill=tk.X, padx=14, pady=(4, 12), ipady=5)
+
+        def toggle_scheduler(on):
+            if on: return task_enable()
+            task_disable(); return True, ""
+        def toggle_startup(on):
+            if on: return startup_enable()
+            startup_disable(); return True, ""
+
+        card("1. Task Scheduler (recommended)",
+             "Creates a task that starts numbinder at every logon. No time limit, runs on battery too.",
+             task_exists, toggle_scheduler)
+        card("2. Startup folder",
+             "Puts numbinder_autostart.cmd into your Startup folder. Use this if Task Scheduler is blocked on your PC.",
+             lambda: os.path.exists(startup_file()), toggle_startup)
+
+        RoundBtn(win, text="Close", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=win.destroy).pack(fill=tk.X, padx=24, pady=(4, 16), ipady=6)
+
+    autostart_holder = {"var": None}
+    def sync_autostart_switch():
+        try:
+            on = autostart_active()
+            MACRO_CONFIG["AppSettings"]["autostart"] = on
+            save_config()
+            if autostart_holder["var"] is not None: autostart_holder["var"].set(on)
+        except Exception:
+            pass
 
     class RoundBtn(tk.Canvas):
         """Rounded button on a Canvas. Replaces tk.Button and accepts the same main options."""
@@ -900,12 +1033,13 @@ try:
             self._redraw()
 
     # --- DRAG & OMNI-RESIZE ---
-    def start_move(e): ui_root.x, ui_root.y = e.x, e.y
-    def stop_move(e): ui_root.x = ui_root.y = None
+    # Перетаскивание по координатам экрана (x_root/y_root). Координаты относительно канваса
+    # дают обратную связь: окно сдвигается, канвас сдвигается, и отрисовка дёргается.
+    def start_move(e): ui_root._mv = (e.x_root - ui_root.winfo_x(), e.y_root - ui_root.winfo_y())
+    def stop_move(e): ui_root._mv = None
     def do_move(e):
-        x = ui_root.winfo_x() + e.x - getattr(ui_root, 'x', 0)
-        y = ui_root.winfo_y() + e.y - getattr(ui_root, 'y', 0)
-        ui_root.geometry(f"+{x}+{y}")
+        off = getattr(ui_root, "_mv", None)
+        if off: ui_root.geometry(f"+{e.x_root - off[0]}+{e.y_root - off[1]}")
 
     main_frame = tk.Frame(ui_root)
     main_frame.pack(fill=tk.BOTH, expand=True)
@@ -1293,15 +1427,32 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         create_update_section(settings_content)
 
         autostart_var = tk.BooleanVar(value=MACRO_CONFIG["AppSettings"].get("autostart", False))
+        autostart_holder["var"] = autostart_var
         def on_autostart_toggle():
-            MACRO_CONFIG["AppSettings"]["autostart"] = autostart_var.get()
+            want = autostart_var.get()
+            ok, msg = toggle_task_scheduler(want)
+            if want and not ok:
+                autostart_var.set(False)
+                MACRO_CONFIG["AppSettings"]["autostart"] = False
+                save_config()
+                show_autostart_help("Task Scheduler failed: " + msg)
+                return
+            if not want: startup_disable()
+            MACRO_CONFIG["AppSettings"]["autostart"] = want
             save_config()
-            toggle_task_scheduler(autostart_var.get())
 
         auto_row = tk.Frame(settings_content, bg=_bg)
         auto_row.pack(fill=tk.X, padx=40, pady=8)
         tk.Label(auto_row, text=tr("Start with Windows"), bg=_bg, fg="#e8e8e8", font=("Segoe UI", 11)).pack(side=tk.LEFT)
         AnimatedSwitch(auto_row, autostart_var, bg=_bg, command=on_autostart_toggle).pack(side=tk.RIGHT)
+
+        hint_row = tk.Frame(settings_content, bg=_bg)
+        hint_row.pack(fill=tk.X, padx=40, pady=(0, 6))
+        tk.Label(hint_row, text="Not starting with system? Try ", bg=_bg, fg="#aaaaaa", font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        other_lbl = tk.Label(hint_row, text="other ways", bg=_bg, fg="#f5d142", font=("Segoe UI", 9, "bold underline"), cursor="hand2")
+        other_lbl.pack(side=tk.LEFT)
+        other_lbl.bind("<Button-1>", lambda e: show_autostart_help())
+        tk.Label(hint_row, text=".", bg=_bg, fg="#aaaaaa", font=("Segoe UI", 9)).pack(side=tk.LEFT)
 
         snd_var = tk.BooleanVar(value=MACRO_CONFIG["AppSettings"].get("action_sound", True))
         def on_snd_toggle():
@@ -1398,6 +1549,18 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         tk.Label(settings_content, text=tr("Crosshairs"), fg="#999999", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
         RoundBtn(settings_content, text=tr("Open crosshair designer"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=lambda: open_crosshair_designer()).pack(fill=tk.X, padx=40, pady=5, ipady=6)
 
+        tk.Label(settings_content, text=tr("Experimental"), fg="#e05a4f", bg=_bg, font=("Segoe UI", 11, "bold")).pack(pady=(20, 5), anchor="w", padx=40)
+        ext_var = tk.BooleanVar(value=extended_on())
+        def on_ext_toggle():
+            if ext_var.get(): show_extended_warning()
+            else: set_extended_keyboard(False)
+        ext_row = tk.Frame(settings_content, bg=_bg)
+        ext_row.pack(fill=tk.X, padx=40, pady=(4, 0))
+        tk.Label(ext_row, text=tr("Extended keyboard"), bg=_bg, fg="#e8e8e8", font=("Segoe UI", 11)).pack(side=tk.LEFT)
+        AnimatedSwitch(ext_row, ext_var, bg=_bg, command=on_ext_toggle).pack(side=tk.RIGHT)
+        tk.Label(settings_content, text=tr("Bind the F-keys, arrows, Insert…Page Down, Right Alt and Right Ctrl. Not recommended."),
+                 bg=_bg, fg="#e05a4f", font=("Segoe UI", 9), wraplength=330, justify=tk.LEFT).pack(anchor="w", padx=40, pady=(2, 6))
+
         if MACRO_CONFIG["AppSettings"].get("dev_unlocked", False):
             dev_var = tk.BooleanVar(value=MACRO_CONFIG["AppSettings"].get("dev_enabled", False))
             def on_dev_toggle():
@@ -1425,6 +1588,43 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         ("79", 0, 3, 1, 1), ("80", 1, 3, 1, 1), ("81", 2, 3, 1, 1), ("284", 3, 3, 1, 2),
         ("82", 0, 4, 2, 1), ("83", 2, 4, 1, 1)
     ]
+    # Extended keyboard (experimental). Columns are relative to the numpad (col 0 = NumLock).
+    # Ins..PgDn and arrows sit where they are on a real keyboard; F-keys are a compact 3x4 block;
+    # RAlt and RCtrl are under the F-keys (RCtrl next to the arrows, like on a keyboard).
+    # Extended scan codes are stored as scan + 256 (e.g. Up = 72 + 256 = 328).
+    EXT_LAYOUT = [
+        ("59", -6.8, 0, 1, 1), ("60", -5.8, 0, 1, 1), ("61", -4.8, 0, 1, 1),
+        ("62", -6.8, 1, 1, 1), ("63", -5.8, 1, 1, 1), ("64", -4.8, 1, 1, 1),
+        ("65", -6.8, 2, 1, 1), ("66", -5.8, 2, 1, 1), ("67", -4.8, 2, 1, 1),
+        ("68", -6.8, 3, 1, 1), ("87", -5.8, 3, 1, 1), ("88", -4.8, 3, 1, 1),
+        ("312", -5.8, 4, 1, 1), ("285", -4.8, 4, 1, 1),
+        ("338", -3.4, 0, 1, 1), ("327", -2.4, 0, 1, 1), ("329", -1.4, 0, 1, 1),
+        ("339", -3.4, 1, 1, 1), ("335", -2.4, 1, 1, 1), ("337", -1.4, 1, 1, 1),
+        ("328", -2.4, 3, 1, 1),
+        ("331", -3.4, 4, 1, 1), ("336", -2.4, 4, 1, 1), ("333", -1.4, 4, 1, 1),
+    ]
+    EXT_COLS = 6.8   # how many columns the extended block adds on the left
+
+    def extended_on():
+        return bool(MACRO_CONFIG.get("AppSettings", {}).get("extended_kb", False))
+
+    def ext_offset():
+        """Extra width on the left of the window when the extended keyboard is on."""
+        if not extended_on(): return 0
+        return int(round(EXT_COLS * float(MACRO_CONFIG.get("DevSettings", {}).get("spacing", 79))))
+
+    def cur_win_w():
+        return WIN_W + ext_offset()
+
+    def current_layout():
+        return NUMPAD_LAYOUT + (EXT_LAYOUT if extended_on() else [])
+
+    allowed_keys = set()   # keys the hook may take over; read by the hook thread
+    def update_allowed_keys():
+        new = {b[0] for b in NUMPAD_LAYOUT}
+        if extended_on(): new |= {b[0] for b in EXT_LAYOUT}
+        allowed_keys.clear(); allowed_keys.update(new)
+    update_allowed_keys()
 
     btn_img_cache = {}
     hover_cache = {}
@@ -1453,7 +1653,9 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
     def start_press(sc):
         hover_state["press_t0"] = time.perf_counter()
         hover_state["press_sc"] = sc
-        if hover_state["job"] is None: render_hover_frame()
+        if hover_state["job"] is None:
+            hover_state["last_t"] = None
+            render_hover_frame()
 
     def _set_static(sc, visible):
         canvas_numpad.itemconfig(f"static_{sc}", state="normal" if visible else "hidden")
@@ -1483,14 +1685,79 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             return base.filter(ImageFilter.GaussianBlur(blur))
         return _cache_pil(("glow", img_path, color, w, h, blur), make), pad
 
+    # ---- hover rendering: everything that costs time is cached ----
+    # Size, tilt and glow strength are quantized, so each frame image is built once and reused.
+    # The glow is blurred once per button at full hover size and only scaled after that.
+    # Canvas items are reused (coords/itemconfig), not deleted and created every frame.
+    hover_photo_cache = collections.OrderedDict()
+    HOVER_PHOTO_MAX = 700
+
+    def _photo_cached(key, make):
+        ph = hover_photo_cache.get(key)
+        if ph is not None:
+            hover_photo_cache.move_to_end(key)
+            return ph
+        ph = make()
+        if ph is None: return None
+        hover_photo_cache[key] = ph
+        if len(hover_photo_cache) > HOVER_PHOTO_MAX: hover_photo_cache.popitem(last=False)
+        return ph
+
+    def _body_photo(img_t, color, w, h, angle_q):
+        def make():
+            body = _tinted_pil(img_t, color, w, h)
+            if abs(angle_q) > 0.01:
+                body = body.rotate(angle_q, resample=Image.Resampling.BICUBIC)
+            return ImageTk.PhotoImage(body)
+        return _photo_cached(("b", img_t, color, w, h, angle_q), make)
+
+    def _glow_full_size(gw, gh, hs_scale):
+        return max(2, int(round(gw * hs_scale))), max(2, int(round(gh * hs_scale)))
+
+    def _glow_photo(img_t, gl_c, blur, gw, gh, hs_scale, s_q, p_q):
+        wmax, hmax = _glow_full_size(gw, gh, hs_scale)
+        def make():
+            base, _pad = _glow_base_pil(img_t, gl_c, wmax, hmax, blur)
+            rel = s_q / hs_scale if hs_scale > 0 else 1.0
+            if abs(rel - 1.0) > 0.005:
+                g = base.resize((max(1, int(round(base.width * rel))), max(1, int(round(base.height * rel)))), Image.Resampling.BILINEAR)
+            else:
+                g = base.copy()
+            g.putalpha(g.getchannel("A").point(lambda v, pq=p_q: int(v * pq)))
+            return ImageTk.PhotoImage(g)
+        return _photo_cached(("g", img_t, gl_c, blur, wmax, hmax, s_q, p_q), make)
+
+    def _hover_items():
+        it = hover_state.get("items")
+        if it: return it
+        c = canvas_numpad
+        it = {
+            "bg": c.create_image(0, 0, state="hidden", tags=("hover_fx_bg",)),
+            "body": c.create_image(0, 0, state="hidden", tags=("hover_fx",)),
+            "icon": c.create_image(0, 0, state="hidden", tags=("hover_fx",)),
+            "text": c.create_text(0, 0, text="", anchor="nw", state="hidden", tags=("hover_fx",)),
+        }
+        hover_state["items"] = it
+        return it
+
+    def _hide_hover_items():
+        it = hover_state.get("items")
+        if not it: return
+        for i in it.values():
+            canvas_numpad.itemconfig(i, state="hidden")
+
+    def _btn_img_type(geom):
+        return PATH_BTN_HOR if geom["cs"] == 2 else (PATH_BTN_VERT if geom["rs"] == 2 else PATH_BTN_SINGLE)
+
     def _draw_hover_frame(sc, p):
-        """Draws the pressed or hovered button at its current position: it moves away from the cursor and tilts."""
+        """Moves the hovered/pressed button away from the cursor and tilts it, using cached images."""
         geom = btn_geom_cache.get(sc)
         if not geom: return
+        c = canvas_numpad
         dev = MACRO_CONFIG.get("DevSettings", {})
         k = geom.get("k", 1.0)
+        it = _hover_items()
 
-        # направление от курсора к центру кнопки
         dx, dy = geom["cx"] - hover_state["mx"], geom["cy"] - hover_state["my"]
         dist = max(1.0, (dx * dx + dy * dy) ** 0.5)
         ux, uy = dx / dist, dy / dist
@@ -1500,92 +1767,120 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         pf = 1.0
         if hover_state["press_sc"] == sc and hover_state["press_t0"] is not None:
             pf = _press_scale((time.perf_counter() - hover_state["press_t0"]) * 1000.0)
-        s = (1.0 + (float(dev.get("hover_scale", 1.3)) - 1.0) * p) * pf
-        w, h = max(2, int(round(geom["w"] * s))), max(2, int(round(geom["h"] * s)))
-        # наклон: кнопка поворачивается «от курсора», сторона дальше от курсора поднимается
-        angle = -float(dev.get("hover_tilt", 8)) * p * ux
+        hs_scale = float(dev.get("hover_scale", 1.3))
+        s_q = round((1.0 + (hs_scale - 1.0) * p) * pf * 100.0) / 100.0
+        w, h = max(2, int(round(geom["w"] * s_q))), max(2, int(round(geom["h"] * s_q)))
+        angle_q = round(-float(dev.get("hover_tilt", 8)) * p * ux * 2.0) / 2.0
+        img_t = _btn_img_type(geom)
 
-        img_t = PATH_BTN_HOR if geom["cs"] == 2 else (PATH_BTN_VERT if geom["rs"] == 2 else PATH_BTN_SINGLE)
-        gl_c = dev.get("color_glow", "#1db954")
-        blur = int(dev.get("hover_blur", 15))
-        refs = []
+        # glow (under the button)
+        p_q = round(p * 20.0) / 20.0
+        gph = None
+        if p_q > 0:
+            try: gph = _glow_photo(img_t, dev.get("color_glow", "#1db954"), int(dev.get("hover_blur", 15)), geom["w"], geom["h"], hs_scale, s_q, p_q)
+            except Exception: gph = None
+        if gph:
+            c.itemconfig(it["bg"], image=gph, state="disabled"); c.coords(it["bg"], ncx, ncy)
+        else:
+            c.itemconfig(it["bg"], state="hidden")
 
-        # свечение (под кнопкой)
-        try:
-            gbase, _pad = _glow_base_pil(img_t, gl_c, w, h, blur)
-            glow = gbase.copy()
-            glow.putalpha(gbase.getchannel("A").point(lambda v: int(v * p)))
-            gph = ImageTk.PhotoImage(glow); refs.append(gph)
-            canvas_numpad.create_image(ncx, ncy, image=gph, tags="hover_fx_bg", state="disabled")
-        except Exception:
-            pass
+        # the button
+        try: bph = _body_photo(img_t, geom["color"], w, h, angle_q)
+        except Exception: bph = None
+        if bph:
+            c.itemconfig(it["body"], image=bph, state="disabled"); c.coords(it["body"], ncx, ncy)
+        else:
+            c.itemconfig(it["body"], state="hidden")
 
-        # сама кнопка
-        try:
-            body = _tinted_pil(img_t, geom["color"], w, h)
-            if abs(angle) > 0.05:
-                body = body.rotate(angle, resample=Image.Resampling.BICUBIC)
-            bph = ImageTk.PhotoImage(body); refs.append(bph)
-            canvas_numpad.create_image(ncx, ncy, image=bph, tags="hover_fx", state="disabled")
-        except Exception:
-            canvas_numpad.create_polygon([ncx - w / 2, ncy - h / 2, ncx + w / 2, ncy - h / 2,
-                                          ncx + w / 2, ncy + h / 2, ncx - w / 2, ncy + h / 2],
-                                         fill=geom["color"], tags="hover_fx", state="disabled")
-
-        # иконка или название (едут вместе с кнопкой)
+        # icon or label (moves with the button)
         drawn_icon = False
         st = MACRO_CONFIG.get(sc, {})
         if geom["is_act"] and st.get("IconPath"):
             ipath = resolve_icon(st["IconPath"])
             icolor = st.get("IconColor", "#ffffff")
             if os.path.exists(ipath):
-                ic_sz = int(min(w, h) * 0.45)
+                ic_sz = max(4, int(min(w, h) * 0.45) // 2 * 2)
                 ik_key = f"icn_{sc}_{icolor}_{ic_sz}"
                 if ik_key not in btn_img_cache:
                     t_icn = tint_image(ipath, icolor, ic_sz, ic_sz)
                     if t_icn: btn_img_cache[ik_key] = t_icn
                 if ik_key in btn_img_cache:
-                    canvas_numpad.create_image(ncx, ncy, image=btn_img_cache[ik_key], tags="hover_fx", state="disabled")
+                    c.itemconfig(it["icon"], image=btn_img_cache[ik_key], state="disabled"); c.coords(it["icon"], ncx, ncy)
                     drawn_icon = True
+        if not drawn_icon: c.itemconfig(it["icon"], state="hidden")
         if MACRO_CONFIG["AppSettings"].get("show_labels", True) and not drawn_icon:
-            t_c = "#ffffff" if geom["is_act"] else "#888888"
-            tx = (ncx - w / 2) + geom["t_x"] * k * s
-            ty = (ncy - h / 2) + geom["t_y"] * k * s
-            canvas_numpad.create_text(tx, ty, text=SC_NAMES.get(sc, sc), fill=t_c,
-                                      font=("Segoe UI", max(6, int(geom["t_size"] * k * s)), "bold"),
-                                      anchor="nw", tags="hover_fx", state="disabled")
-        hover_state["refs"] = refs   # держим ссылки на картинки, иначе Tk их удалит
+            tx = (ncx - w / 2) + geom["t_x"] * k * s_q
+            ty = (ncy - h / 2) + geom["t_y"] * k * s_q
+            c.itemconfig(it["text"], text=SC_NAMES.get(sc, sc), fill="#ffffff" if geom["is_act"] else "#888888",
+                         font=("Segoe UI", max(6, int(geom["t_size"] * k * s_q)), "bold"), state="disabled")
+            c.coords(it["text"], tx, ty)
+        else:
+            c.itemconfig(it["text"], state="hidden")
 
     def render_hover_frame():
         hs = hover_state
+        now = time.perf_counter()
+        last = hs.get("last_t") or (now - 1 / 60.0)
+        dt = min(0.1, max(0.0, now - last))
+        hs["last_t"] = now
         target = hs["target"]
-        # другая кнопка под курсором: возвращаем прежнюю на место
+        # another button under the cursor: put the previous one back
         if hs["sc"] is not None and target != hs["sc"]:
-            canvas_numpad.delete("hover_fx"); canvas_numpad.delete("hover_fx_bg")
+            _hide_hover_items()
             _set_static(hs["sc"], True)
-            hs["sc"] = None; hs["p"] = 0.0; hs["refs"] = []
+            hs["sc"] = None; hs["p"] = 0.0
         if target is not None and hs["sc"] is None:
             hs["sc"] = target; hs["p"] = 0.0
             _set_static(target, False)
 
         desired = 1.0 if target is not None else 0.0
-        p = hs["p"] + (desired - hs["p"]) * HOVER_EASE
+        # time-based easing: same speed at any frame rate (HOVER_EASE is the step per 1/60 s)
+        a = 1.0 - (1.0 - HOVER_EASE) ** (dt * 60.0)
+        p = hs["p"] + (desired - hs["p"]) * a
         if abs(desired - p) < 0.01: p = desired
         hs["p"] = p
 
-        canvas_numpad.delete("hover_fx"); canvas_numpad.delete("hover_fx_bg")
         if hs["sc"] is not None and (p > 0.005 or _press_active()):
             _draw_hover_frame(hs["sc"], p)
+        else:
+            _hide_hover_items()
         if target is None and p <= 0.0 and hs["sc"] is not None:
             _set_static(hs["sc"], True)
-            hs["sc"] = None; hs["refs"] = []
+            hs["sc"] = None
 
-        hs["job"] = ui_root.after(16, render_hover_frame) if (p != desired or _press_active()) else None
+        if p != desired or _press_active():
+            spent = (time.perf_counter() - now) * 1000.0
+            hs["job"] = ui_root.after(max(1, int(16.6 - spent)), render_hover_frame)
+        else:
+            hs["job"] = None
+            hs["last_t"] = None
 
     def set_hover_target(sc):
+        """Mouse moves are coalesced: at most one render per ~8 ms, even with a 1000 Hz mouse."""
         hover_state["target"] = sc
         if hover_state["job"] is None:
-            render_hover_frame()
+            hover_state["last_t"] = None
+            hover_state["job"] = ui_root.after(8, render_hover_frame)
+
+    def _prewarm_hover():
+        """Blurs the glow for every button in the background, so the first hover has no hitch."""
+        dev = MACRO_CONFIG.get("DevSettings", {})
+        hs_scale = float(dev.get("hover_scale", 1.3))
+        gl_c = dev.get("color_glow", "#1db954")
+        blur = int(dev.get("hover_blur", 15))
+        todo, seen = [], set()
+        for g in list(btn_geom_cache.values()):
+            img_t = _btn_img_type(g)
+            wm, hm = _glow_full_size(g["w"], g["h"], hs_scale)
+            if (img_t, wm, hm) in seen: continue
+            seen.add((img_t, wm, hm)); todo.append((img_t, wm, hm))
+        def step():
+            if not todo: return
+            img_t, wm, hm = todo.pop()
+            try: _glow_base_pil(img_t, gl_c, wm, hm, blur)
+            except Exception: pass
+            ui_root.after(5, step)
+        ui_root.after(150, step)
 
     def _hit_button(x, y):
         """Button whose resting rectangle contains the point. Matches the sprite."""
@@ -1596,15 +1891,18 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 if best is None or d < best_d: best, best_d = sc, d
         return best
 
+    def _canvas_cursor(cur):
+        if canvas_numpad.cget("cursor") != cur: canvas_numpad.config(cursor=cur)
+
     def on_canvas_motion(e):
         hover_state["mx"], hover_state["my"] = e.x, e.y
         sc = _hit_button(e.x, e.y)
         if sc is None:
-            canvas_numpad.config(cursor=""); set_hover_target(None)
+            _canvas_cursor(""); set_hover_target(None)
         elif sc in LOCKED_SC:
-            canvas_numpad.config(cursor="no"); set_hover_target(None)
+            _canvas_cursor("no"); set_hover_target(None)
         else:
-            canvas_numpad.config(cursor="hand2"); set_hover_target(sc)
+            _canvas_cursor("hand2"); set_hover_target(sc)
 
     def on_canvas_leave(e):
         canvas_numpad.config(cursor="")
@@ -1649,25 +1947,32 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 open_config_screen(scan_code)
         return on_numpad_click
 
-    _first_place = {"done": False}
+    _first_place = {"done": False, "w": None}
     def draw_numpad():
         canvas_numpad.delete("all")
+        btn_geom_cache.clear()
         if hover_state["job"]:
             try: ui_root.after_cancel(hover_state["job"])
             except Exception: pass
-        hover_state.update({"sc": None, "target": None, "p": 0.0, "job": None, "refs": [], "press_t0": None, "press_sc": None})
+        hover_state.update({"sc": None, "target": None, "p": 0.0, "job": None, "refs": [], "press_t0": None, "press_sc": None, "items": None, "last_t": None})
         apply_native_style()
         dev = MACRO_CONFIG.get("DevSettings", {})
         labels_var.set(MACRO_CONFIG["AppSettings"].get("show_labels", True))
         
-        win_w = WIN_W
+        ext_w = ext_offset()
+        win_w = WIN_W + ext_w
         win_h = WIN_H
         if not _first_place["done"]:
             _first_place["done"] = True
             sw, sh = ui_root.winfo_screenwidth(), ui_root.winfo_screenheight()
             ui_root.geometry(f"{win_w}x{win_h}+{max(0, (sw - win_w) // 2)}+{max(0, (sh - win_h) // 2)}")
+        elif _first_place["w"] is not None and _first_place["w"] != win_w:
+            # the window grows/shrinks on the LEFT, so the numpad stays where it was on screen
+            nx = ui_root.winfo_x() - (win_w - _first_place["w"])
+            ui_root.geometry(f"{win_w}x{win_h}+{nx}+{ui_root.winfo_y()}")
         else:
             ui_root.geometry(f"{win_w}x{win_h}")
+        _first_place["w"] = win_w
         apply_window_region(win_w, win_h)
         surface_color = dev.get("theme_grad_bot", "#202020")
         ui_root.configure(bg=surface_color)
@@ -1727,14 +2032,21 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         
         grid_w = 3 * SPACING + BASE_SIZE
         grid_h = 4 * SPACING + BASE_SIZE
-        START_X = (win_w - grid_w) / 2
+        START_X = ext_w + (WIN_W - grid_w) / 2
         START_Y = max(110, (win_h - grid_h) / 2 - 10) 
         
         show_lbls = MACRO_CONFIG["AppSettings"].get("show_labels", True)
         color_active = dev.get("color_active", "#1db954")
         color_inactive = dev.get("color_inactive", "#3a3a3a")
         
-        for btn in NUMPAD_LAYOUT:
+        if ext_w:
+            # big red warning plate at the bottom
+            plate = tk.Label(canvas_numpad, text=tr("⚠  EXTENDED KEYBOARD IS ON (experimental)\nIt can break normal keyboard use. Turning it off in Settings is recommended."),
+                             bg="#c62828", fg="#ffffff", font=("Segoe UI", 11, "bold"), justify=tk.CENTER, cursor="hand2", pady=10)
+            canvas_numpad.create_window(win_w / 2, win_h - 22, window=plate, anchor="s", width=win_w - 44)
+            plate.bind("<Button-1>", lambda e: show_settings_screen())
+
+        for btn in current_layout():
             sc, col, row, col_span, row_span = btn
             orig_w = BASE_SIZE * col_span + (SPACING - BASE_SIZE) * (col_span - 1)
             orig_h = BASE_SIZE * row_span + (SPACING - BASE_SIZE) * (row_span - 1)
@@ -1781,6 +2093,9 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 lbl_text = SC_NAMES.get(sc, sc)
                 txt_color = "#ffffff" if is_active else ("#5f5f5f" if locked else "#888888")
                 canvas_numpad.create_text((center_x - draw_w/2) + t_x*SCALE, (center_y - draw_h/2) + t_y*SCALE, text=lbl_text, fill=txt_color, font=("Segoe UI", int(t_s*SCALE), "bold"), anchor="nw", tags=(st_tag,))
+
+        try: _prewarm_hover()
+        except Exception: pass
 
     class ToolTip:
         def __init__(self, widget, text):
@@ -1852,6 +2167,292 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             ui_root.option_add("*TCombobox*Listbox.font", ("Segoe UI", 10))
         except Exception:
             pass
+
+    # ================= ЕДИНЫЙ ВЫБОР ПРИЛОЖЕНИЙ =================
+    # Один список для exec, громкости и исключений clean2;0.
+    # Список: запущенные приложения пользователя + ярлыки из меню «Пуск» (так видны и не запущенные).
+    # Иконки берутся из exe и кэшируются PNG-файлами рядом с config.json.
+    APP_CAT = {"items": None, "busy": False}
+    APP_ICON_IMG = {}
+    _APP_SCAN_PS = r"""
+param([string]$Cache, [string]$Extra)
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+Add-Type -AssemblyName System.Drawing
+$found = @{}
+$names = @{}
+$sh = New-Object -ComObject WScript.Shell
+$dirs = @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs")
+foreach ($d in $dirs) {
+  Get-ChildItem -LiteralPath $d -Filter *.lnk -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+    $t = ''
+    try { $t = $sh.CreateShortcut($_.FullName).TargetPath } catch {}
+    if ($t -and $t.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $t)) {
+      $k = $t.ToLower()
+      if (-not $names.ContainsKey($k)) { $names[$k] = $_.BaseName }
+      $found[$k] = $t
+    }
+  }
+}
+if ($Extra -and (Test-Path -LiteralPath $Extra)) {
+  foreach ($line in Get-Content -LiteralPath $Extra) {
+    $t = $line.Trim()
+    if ($t) { $found[$t.ToLower()] = $t }
+  }
+}
+foreach ($k in @($found.Keys)) {
+  $t = $found[$k]
+  $safe = ($k -replace '[^a-z0-9]', '_')
+  if ($safe.Length -gt 120) { $safe = $safe.Substring($safe.Length - 120) }
+  $png = Join-Path $Cache ($safe + '.png')
+  if (-not (Test-Path -LiteralPath $png)) {
+    try { [System.Drawing.Icon]::ExtractAssociatedIcon($t).ToBitmap().Save($png, [System.Drawing.Imaging.ImageFormat]::Png) } catch { $png = '' }
+  }
+  $desc = ''
+  try { $desc = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($t).FileDescription } catch {}
+  $nm = ''
+  if ($names.ContainsKey($k)) { $nm = $names[$k] }
+  Write-Output ($t + "`t" + $nm + "`t" + $desc + "`t" + $png)
+}
+"""
+
+    def _app_cache_dir():
+        d = os.path.join(os.path.dirname(PATH_CONFIG), "app_icons_cache")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _load_app_catalog():
+        try:
+            d = _app_cache_dir()
+            me = os.environ.get("USERNAME", "").lower()
+            win_dir = os.environ.get("WINDIR", "C:\\Windows").lower()
+            running_exes = set()
+            for p in psutil.process_iter(["username", "exe"]):
+                try:
+                    ex = p.info.get("exe") or ""
+                    if not ex.lower().endswith(".exe") or ex.lower().startswith(win_dir): continue
+                    uname = (p.info.get("username") or "").lower()
+                    if me and uname and not uname.endswith("\\" + me): continue
+                    running_exes.add(ex)
+                except Exception:
+                    pass
+            extra = os.path.join(d, "running.txt")
+            with open(extra, "w", encoding="utf-8") as f:
+                f.write("\n".join(running_exes))
+            ps1 = os.path.join(d, "scan_apps.ps1")
+            with open(ps1, "w", encoding="utf-8") as f:
+                f.write(_APP_SCAN_PS)
+            r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1,
+                                "-Cache", d, "-Extra", extra], capture_output=True, creationflags=0x08000000)
+            out = r.stdout.decode("utf-8", "replace")
+            running_names = {os.path.basename(x).lower() for x in running_exes}
+            items, seen = [], set()
+            for line in out.splitlines():
+                parts = [x.strip() for x in line.split("\t")]
+                if len(parts) < 4: continue
+                path, sc_name, desc, png = parts[0], parts[1], parts[2], parts[3]
+                if not path.lower().endswith(".exe") or path.lower() in seen: continue
+                seen.add(path.lower())
+                exe = os.path.basename(path).lower()
+                name = sc_name or desc or os.path.splitext(os.path.basename(path))[0]
+                items.append({"name": name, "exe": exe, "path": path,
+                              "icon": png if png and os.path.exists(png) else "",
+                              "running": exe in running_names})
+            items.sort(key=lambda x: (not x["running"], x["name"].lower()))
+            APP_CAT["items"] = items
+        except Exception as e:
+            try: _runlog("app catalog error: " + repr(e))
+            except Exception: pass
+            APP_CAT["items"] = []
+        finally:
+            APP_CAT["busy"] = False
+
+    def ensure_app_catalog():
+        if APP_CAT["items"] is None and not APP_CAT["busy"]:
+            APP_CAT["busy"] = True
+            threading.Thread(target=_load_app_catalog, daemon=True).start()
+
+    def app_info(exe):
+        exe = (exe or "").lower()
+        for it in APP_CAT["items"] or []:
+            if it["exe"] == exe: return it
+        return None
+
+    def app_display_name(exe):
+        it = app_info(exe)
+        if it: return it["name"]
+        return os.path.splitext(exe or "")[0] or (exe or "")
+
+    def load_app_icon(png, size):
+        if not png or not os.path.exists(png): return None
+        key = (png, size)
+        if key not in APP_ICON_IMG:
+            try:
+                im = Image.open(png).convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
+                APP_ICON_IMG[key] = ImageTk.PhotoImage(im)
+            except Exception:
+                return None
+        return APP_ICON_IMG[key]
+
+    def _split_apps(text):
+        out = []
+        for part in re.split(r"[,;\n]+", text or ""):
+            name = part.strip().lower()
+            if not name: continue
+            if not name.endswith(".exe"): name += ".exe"
+            if name not in out: out.append(name)
+        return out
+
+    def open_app_picker(var, multi=False):
+        ensure_app_catalog()
+        _bg_p = "#111111"
+        win = tk.Toplevel(ui_root)
+        win.title(tr("Choose apps") if multi else tr("Choose app"))
+        win.configure(bg=_bg_p)
+        win.geometry("420x580")
+        win.transient(ui_root)
+        selected = set(_split_apps(var.get())) if multi else set(_split_apps(var.get())[:1])
+
+        tk.Label(win, text=tr("Choose apps") if multi else tr("Choose app"), fg="#ffffff", bg=_bg_p,
+                 font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=20, pady=(16, 2))
+        tk.Label(win, text=tr("Apps that are not running are taken from your Start menu. If an app is missing, launch it once and open this list again."),
+                 fg="#aaaaaa", bg=_bg_p, font=("Segoe UI", 9), wraplength=370, justify=tk.LEFT).pack(anchor="w", padx=20)
+        search = tk.Entry(win, bg="#2d2d2d", fg="#ffffff", insertbackground="#ffffff", borderwidth=0, font=("Segoe UI", 10))
+        search.pack(fill=tk.X, padx=20, pady=(10, 6), ipady=5)
+        status = tk.Label(win, text=tr("Loading apps..."), fg="#f5d142", bg=_bg_p, font=("Segoe UI", 9))
+        status.pack(anchor="w", padx=20)
+
+        wrap = tk.Frame(win, bg=_bg_p)
+        wrap.pack(fill=tk.BOTH, expand=True, padx=20, pady=6)
+        canvas = tk.Canvas(wrap, bg=_bg_p, highlightthickness=0, bd=0)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        inner = tk.Frame(canvas, bg=_bg_p)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win_id, width=e.width))
+        def _wheel(e):
+            try: canvas.yview_scroll(int(-e.delta / 120), "units")
+            except Exception: pass
+        canvas.bind("<MouseWheel>", _wheel); inner.bind("<MouseWheel>", _wheel)
+
+        img_refs = []
+
+        def pick(exe):
+            if multi:
+                if exe in selected: selected.discard(exe)
+                else: selected.add(exe)
+                render()
+            else:
+                var.set(exe)
+                win.destroy()
+
+        def render(*_):
+            try:
+                for w in inner.winfo_children(): w.destroy()
+            except Exception:
+                return
+            img_refs.clear()
+            items = APP_CAT["items"]
+            if items is None:
+                status.config(text=tr("Loading apps..."))
+                return
+            q = search.get().strip().lower()
+            status.config(text="" if items else tr("No apps found. Launch an app and try again."))
+            shown = 0
+            for it in items:
+                if q and q not in it["name"].lower() and q not in it["exe"]: continue
+                shown += 1
+                if shown > 250: break
+                sel = it["exe"] in selected
+                bg_r = "#1db954" if sel else "#1e1e1e"
+                fg_main = "#000000" if sel else "#ffffff"
+                fg_sub = "#1a3a24" if sel else "#888888"
+                row = tk.Frame(inner, bg=bg_r, cursor="hand2")
+                row.pack(fill=tk.X, pady=2)
+                ic = load_app_icon(it["icon"], 26)
+                icon_lbl = tk.Label(row, bg=bg_r)
+                if ic:
+                    img_refs.append(ic); icon_lbl.config(image=ic)
+                icon_lbl.pack(side=tk.LEFT, padx=(8, 10), pady=6)
+                txt = tk.Frame(row, bg=bg_r)
+                txt.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                n_lbl = tk.Label(txt, text=it["name"], fg=fg_main, bg=bg_r, font=("Segoe UI", 10, "bold"), anchor="w")
+                n_lbl.pack(anchor="w")
+                sub = it["exe"] + ("   ● running" if it["running"] else "")
+                e_lbl = tk.Label(txt, text=sub, fg=fg_sub, bg=bg_r, font=("Segoe UI", 8), anchor="w")
+                e_lbl.pack(anchor="w")
+                for w in (row, icon_lbl, txt, n_lbl, e_lbl):
+                    w.bind("<Button-1>", lambda e, k=it["exe"]: pick(k))
+                    w.bind("<MouseWheel>", _wheel)
+
+        def poll():
+            try:
+                if not win.winfo_exists(): return
+            except Exception:
+                return
+            if APP_CAT["items"] is None:
+                win.after(200, poll)
+            else:
+                render()
+        search.bind("<KeyRelease>", render)
+        poll()
+
+        def done():
+            if multi: var.set(", ".join(sorted(selected)))
+            win.destroy()
+        RoundBtn(win, text=tr("Done") if multi else tr("Close"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10),
+                 borderwidth=0, cursor="hand2", command=done).pack(fill=tk.X, padx=20, pady=(4, 14), ipady=6)
+
+    def create_app_row(parent, label_text, var, multi=False, hover_text=None, ext_text=None):
+        """Single row for choosing app(s): shows icons + app names, button opens the shared picker."""
+        ensure_app_catalog()
+        _bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#111111")
+        row = tk.Frame(parent, bg=_bg)
+        row.pack(fill=tk.X, padx=30, pady=8)
+        lbl_frame = tk.Frame(row, bg=_bg)
+        lbl_frame.pack(side=tk.LEFT)
+        tk.Label(lbl_frame, text=label_text, fg="#e8e8e8", bg=_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        if hover_text and ext_text:
+            tip = tk.Label(lbl_frame, text="ⓘ", fg="#1db954", bg=_bg, font=("Segoe UI", 9, "bold"), cursor="hand2")
+            tip.pack(side=tk.LEFT, padx=5)
+            ToolTip(tip, hover_text)
+            tip.bind("<Button-1>", lambda e: show_info_window(label_text, ext_text))
+
+        right = tk.Frame(row, bg=_bg)
+        right.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0))
+        btn = RoundBtn(right, text=tr("Choose"), bg="#3a3a3a", fg="#fff", borderwidth=0, cursor="hand2",
+                       font=("Segoe UI", 9), command=lambda: open_app_picker(var, multi=multi))
+        btn.pack(side=tk.RIGHT, padx=(5, 0), ipadx=5)
+        box = tk.Frame(right, bg="#2d2d2d")
+        box.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+        icons = tk.Frame(box, bg="#2d2d2d")
+        icons.pack(side=tk.LEFT, padx=(6, 0))
+        value_lbl = tk.Label(box, text="", fg="#ffffff", bg="#2d2d2d", font=("Segoe UI", 10), anchor="w")
+        value_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        icon_refs = []
+
+        def refresh_display(*_):
+            try:
+                exes = _split_apps(var.get())
+                if not exes:
+                    value_lbl.config(text=tr("nothing selected") if multi else "—")
+                for w in icons.winfo_children(): w.destroy()
+                icon_refs.clear()
+                for e in exes[:4]:
+                    it = app_info(e)
+                    im = load_app_icon(it["icon"], 20) if it else None
+                    if im:
+                        icon_refs.append(im)
+                        tk.Label(icons, image=im, bg="#2d2d2d").pack(side=tk.LEFT, padx=(0, 4))
+                names = [app_display_name(e) for e in exes]
+                if exes: value_lbl.config(text=", ".join(names) if multi else names[0])
+                if APP_CAT["items"] is None:
+                    value_lbl.after(400, refresh_display)
+            except Exception:
+                pass
+
+        var.trace_add("write", refresh_display)
+        refresh_display()
+        return row
 
     def create_input_row(parent, label_text, var, hover_text=None, ext_text=None, browse_type=None):
         _bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#111111")
@@ -1975,12 +2576,71 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                                 tr("Languages in a cycle, comma-separated: ENG, RUS, DE, FRA, ESP, UKR"),
                                 tr("Each press switches the layout to the next language in the list."))
     row_path = create_input_row(config_content, "Path", var_path, tr("File path."), tr("Specify the absolute path to the program file."), browse_type="file")
-    row_proc = create_input_row(config_content, "Process", var_proc, tr("Process name in Task Manager."), tr("Exact process name (for example, spotify.exe)."), browse_type="process")
+    row_proc = create_app_row(config_content, "Process", var_proc, multi=False, hover_text=tr("The app this button controls."), ext_text=tr("Pick the app from the list. Apps that are not running yet are taken from the Start menu. Icons are shown next to each app."))
     row_act = create_input_row(config_content, "ActionTime", var_act, tr("Delay before triggering (sec)."), tr("Set 0 to trigger instantly on click."))
     row_sec = create_input_row(config_content, "Hold To Action", var_sec, tr("Long hold (sec)."), tr("Hold time for the second action. Set 1.0 for the overlay."))
+    MIC_MODES = [("toggle", "Toggle (press)"), ("ptt", "Push to talk (hold)"), ("ptm", "Push to mute (hold)")]
+    var_mic_mode = tk.StringVar(value=MIC_MODES[0][1])
+    row_mic_mode = create_dropdown_row(config_content, "Mode", var_mic_mode, [m[1] for m in MIC_MODES], tr("How the button controls the microphone."),
+                                       tr("Toggle: each press mutes or unmutes the mic.\nPush to talk: the mic is on only while you hold the button.\nPush to mute: the mic is off only while you hold the button."))
     var_media = tk.StringVar(value="Play / Pause")
     row_media = create_dropdown_row(config_content, "Media key", var_media, [m[1] for m in MEDIA_KEYS], tr("Which media key to press."), tr("Play/pause, next, previous, stop or mute. Works with any media player."))
-    row_clean_keep = create_input_row(config_content, "Keep open", var_clean_keep, tr("clean2;0 exceptions."), tr("Comma-separated process names that clean2;0 must NOT close, e.g. discord, telegram. Case-insensitive, .exe optional."))
+    # ---- Launch\\Close app: список действий (триггер + значение + действие) ----
+    ACTION_KIND = [("launch", "Launch app"), ("close", "Close process"), ("restart", "Restart app"), ("tray", "Minimize to tray")]
+    TRIGGER_KIND = [("hold", "Hold (sec)"), ("count", "Press N times")]
+    actions_rows = []
+    actions_box = tk.Frame(config_content, bg=MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020"))
+    tk.Label(actions_box, text=tr("Actions"), fg="#e8e8e8", bg=MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020"), font=("Segoe UI", 10)).pack(anchor="w")
+    tk.Label(actions_box, text=tr("Hold: the hold time closest to yours runs on release. Press N times: N quick presses in a row."),
+             fg="#888888", bg=MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020"), font=("Segoe UI", 8), wraplength=330, justify=tk.LEFT).pack(anchor="w", pady=(0, 4))
+    actions_list = tk.Frame(actions_box, bg=MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020"))
+    actions_list.pack(fill=tk.X)
+
+    def _add_action_row(a=None):
+        _ensure_dark_combobox_style()
+        a = a or {"trigger": "hold", "value": 1.0, "action": "launch"}
+        _bgc = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020")
+        fr = tk.Frame(actions_list, bg=_bgc)
+        fr.pack(fill=tk.X, pady=2)
+        trig_v = tk.StringVar(value=next(l for k, l in TRIGGER_KIND if k == a.get("trigger")) if a.get("trigger") in dict(TRIGGER_KIND) else TRIGGER_KIND[0][1])
+        act_v = tk.StringVar(value=next(l for k, l in ACTION_KIND if k == a.get("action")) if a.get("action") in dict(ACTION_KIND) else ACTION_KIND[0][1])
+        val_v = tk.StringVar(value=f"{float(a.get('value', 1)):g}" if a.get("trigger") != "count" else str(int(a.get("value", 1))))
+        cb_t = ttk.Combobox(fr, textvariable=trig_v, values=[l for _, l in TRIGGER_KIND], state="readonly", width=13, style="Dark.TCombobox")
+        cb_t.pack(side=tk.LEFT)
+        ent = tk.Entry(fr, textvariable=val_v, width=4, justify="center", bg="#2d2d2d", fg="#ffffff", insertbackground="#ffffff", borderwidth=0, font=("Segoe UI", 10))
+        ent.pack(side=tk.LEFT, padx=4, ipady=4)
+        cb_a = ttk.Combobox(fr, textvariable=act_v, values=[l for _, l in ACTION_KIND], state="readonly", width=15, style="Dark.TCombobox")
+        cb_a.pack(side=tk.LEFT)
+        rec = {"frame": fr, "trig": trig_v, "val": val_v, "act": act_v}
+        def _remove(rec=rec):
+            try: rec["frame"].destroy()
+            except Exception: pass
+            if rec in actions_rows: actions_rows.remove(rec)
+        RoundBtn(fr, text="✕", bg="#3a3a3a", fg="#ffffff", font=("Segoe UI", 9), borderwidth=0, cursor="hand2", command=_remove).pack(side=tk.RIGHT, ipadx=4)
+        actions_rows.append(rec)
+
+    def _set_action_rows(acts):
+        for rec in list(actions_rows):
+            try: rec["frame"].destroy()
+            except Exception: pass
+        actions_rows.clear()
+        for a in acts or []: _add_action_row(a)
+
+    def _collect_actions():
+        out = []
+        for r in actions_rows:
+            trig = next((k for k, l in TRIGGER_KIND if l == r["trig"].get()), "hold")
+            act = next((k for k, l in ACTION_KIND if l == r["act"].get()), "launch")
+            try: v = float(r["val"].get().replace(",", "."))
+            except ValueError: v = 1.0
+            v = max(1, int(round(v))) if trig == "count" else max(0.1, v)
+            out.append({"trigger": trig, "value": v, "action": act})
+        return out
+
+    RoundBtn(actions_box, text="+ Add action", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 9), borderwidth=0, cursor="hand2",
+             command=lambda: _add_action_row()).pack(fill=tk.X, pady=(6, 0), ipady=4)
+
+    row_clean_keep = create_app_row(config_content, "Keep open", var_clean_keep, multi=True, hover_text=tr("Apps clean2;0 must NOT close."), ext_text=tr("Pick the apps clean2;0 must leave open. You can select several."))
     row_admin = create_switch_row(config_content, "Run as Admin", var_admin_bool, tr("Run as administrator."), tr("The program will be launched with maximum rights in Windows."))
     row_voltarget = create_dropdown_row(config_content, tr("Target"), var_vol_target, [_VT_PROC, _VT_ACTIVE, _VT_SYSTEM], tr("Whose volume to control."), tr("Process — the app from the Process field (for example, Spotify).\n\nActive application — the window in the foreground (its child processes too, for example in a browser).\n\nWhole system — overall Windows volume. The limit below also applies here: set it to 100 if you don't want it to interfere."), lambda e: refresh_config_ui())
     row_voldir = create_dropdown_row(config_content, "Direction", var_vol_dir, ["Up (+)", "Down (-)"], tr("Volume adjustment direction."), tr("Up: increases volume.\nDown: decreases volume."))
@@ -2108,13 +2768,14 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
 
     def refresh_config_ui(*args):
         t = label_to_type(var_type.get())
-        for r in [row_lang, row_path, row_proc, row_act, row_sec, row_clean_keep, row_admin, row_voltarget, row_volmode, row_volsteps, row_voldir, row_volpair, sound_container, lbl_overlay_tip, row_ch_mode, row_ch_name, ch_list_container, lbl_ch_tip, row_hotkey, row_ch_designer, row_ch_hint, lbl_type_desc, row_media]: r.pack_forget()
+        for r in [row_lang, row_path, row_proc, row_act, row_sec, row_clean_keep, row_admin, row_voltarget, row_volmode, row_volsteps, row_voldir, row_volpair, sound_container, lbl_overlay_tip, row_ch_mode, row_ch_name, ch_list_container, lbl_ch_tip, row_hotkey, row_ch_designer, row_ch_hint, lbl_type_desc, row_media, actions_box, row_mic_mode]: r.pack_forget()
         
         row_icon_path.pack(fill=tk.X, padx=30, pady=2)
         row_icon_color.pack(fill=tk.X, padx=30, pady=2)
             
         if t == "exec":
-            for r in [row_path, row_proc, row_act, row_sec, row_admin]: r.pack(fill=tk.X, padx=30, pady=2)
+            for r in [row_path, row_proc, row_admin]: r.pack(fill=tk.X, padx=30, pady=2)
+            actions_box.pack(fill=tk.X, padx=30, pady=2)
         elif t == "lang": row_lang.pack(fill=tk.X, padx=30, pady=2)
         elif t == "volume":
             row_voltarget.pack(fill=tk.X, padx=30, pady=2)
@@ -2128,6 +2789,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             sound_container.pack(fill=tk.X, pady=(10, 5))
         elif t == "restart": row_act.pack(fill=tk.X, padx=30, pady=2)
         elif t == "media": row_media.pack(fill=tk.X, padx=30, pady=2)
+        elif t == "mic": row_mic_mode.pack(fill=tk.X, padx=30, pady=2)
         elif t == "overlay":
             lbl_overlay_tip.pack(fill=tk.X, pady=(10, 20))
             if float(var_sec.get() or -1) <= 0: var_sec.set("1.0")
@@ -2175,9 +2837,9 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         aud_cfg = {k: v.get() for k, v in audio_vars.items()}
         current_overlay = MACRO_CONFIG.get(current_edit_sc, {}).get("Overlay", MACRO_TEMPLATE["Overlay"].copy())
         
-        act_save = 0.0 if t in ("crosshair", "light macro", "media") else float(var_act.get() or 0)
+        act_save = 0.0 if t in ("crosshair", "light macro", "media", "exec") else float(var_act.get() or 0)
         sec_save = float(var_sec.get() or -1)
-        if t == "light macro": sec_save = -1.0
+        if t in ("light macro", "exec"): sec_save = -1.0
         if t == "crosshair": sec_save = max(0.1, sec_save) if var_ch_mode.get() == _CH_MODE_SMART else -1.0
         
         # --- режим громкости: плавно или точки ---
@@ -2196,7 +2858,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             "Pair": new_pair,
             "Type": t,
             "Language": var_lang.get() if t == "lang" else "-1",
-            "Path": var_path.get() if t == "exec" else "-1",
+            "Path": _resolve_exec_path(var_proc.get(), var_path.get()) if t == "exec" else "-1",
             "ProcessName": var_proc.get() if t in ["exec", "volume"] else "-1",
             "ActionTime": act_save,
             "SecondActionTime": sec_save,
@@ -2206,6 +2868,8 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             "VolumeMode": vm,
             "VolumeSteps": vsteps,
             "CleanKeep": var_clean_keep.get().strip() if t == "clean" else "",
+            "Actions": _collect_actions() if t == "exec" else [],
+            "MicMode": next((m[0] for m in MIC_MODES if m[1] == var_mic_mode.get()), "toggle") if t == "mic" else "toggle",
             "MediaKey": next((m[0] for m in MEDIA_KEYS if m[1] == var_media.get()), "playpause") if t == "media" else "-1",
             "Desc": f"Macro SC {current_edit_sc}",
             "IconPath": var_icon_path.get(),
@@ -2242,6 +2906,9 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             MACRO_CONFIG[new_pair] = partner
 
         save_config()
+        # push to talk starts with the mic muted
+        if t == "mic" and MACRO_CONFIG[current_edit_sc].get("MicMode") == "ptt":
+            mic_command("set", True, osd=True)
         show_main_screen()
 
     config_bottom_fr = tk.Frame(config_content, bg=MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#111111"))
@@ -2460,7 +3127,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         dev = MACRO_CONFIG.get("DevSettings", {})
         win_w, win_h = WIN_W, WIN_H
         pad = 14
-        crosshair_bg_frame.place(x=pad, y=pad, width=win_w-pad*2, height=win_h-pad*2)
+        crosshair_bg_frame.place(x=ext_offset() + pad, y=pad, width=win_w-pad*2, height=win_h-pad*2)
         crosshair_bg_frame.lift()
 
 
@@ -2691,6 +3358,53 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             elif show_crosshair(nm):
                 show_osd(tr("Crosshair: {}").format(nm))
 
+    def set_extended_keyboard(on):
+        MACRO_CONFIG["AppSettings"]["extended_kb"] = bool(on)
+        save_config()
+        update_allowed_keys()
+        try: draw_numpad()
+        except Exception: _runlog("draw_numpad after extended toggle:\n" + traceback.format_exc())
+        # settings panel stays over the numpad, which did not move on screen
+        try:
+            if settings_bg_frame.winfo_ismapped(): settings_bg_frame.place_configure(x=ext_offset() + 14)
+        except Exception: pass
+        try: build_settings_screen()
+        except Exception: pass
+
+    def show_extended_warning():
+        win = tk.Toplevel(ui_root)
+        win.title("Extended keyboard")
+        win.configure(bg="#111111")
+        win.transient(ui_root)
+        win.resizable(False, False)
+        decided = {"v": False}
+        def cancel():
+            if decided["v"]: return
+            decided["v"] = True
+            try: win.destroy()
+            except Exception: pass
+            try: build_settings_screen()   # switch back to off
+            except Exception: pass
+        def enable():
+            decided["v"] = True
+            try: win.destroy()
+            except Exception: pass
+            set_extended_keyboard(True)
+        win.protocol("WM_DELETE_WINDOW", cancel)
+        # buttons first, at the bottom: they always stay visible, whatever the text height or DPI
+        btn_row = tk.Frame(win, bg="#111111")
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=24, pady=(10, 18))
+        RoundBtn(btn_row, text=tr("Cancel"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10, "bold"), borderwidth=0, cursor="hand2", command=cancel).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5), ipady=6)
+        RoundBtn(btn_row, text=tr("Enable anyway"), bg="#c62828", fg="#ffffff", font=("Segoe UI", 10, "bold"), borderwidth=0, cursor="hand2", command=enable).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0), ipady=6)
+        tk.Label(win, text="⚠  " + tr("Experimental feature"), fg="#ff5a4f", bg="#111111", font=("Segoe UI", 15, "bold")).pack(anchor="w", padx=24, pady=(20, 8))
+        tk.Label(win, text=tr("Extended keyboard is a very experimental feature. It will most likely not get much support, and it may change or be removed.\n\n"
+                              "It lets numbinder take over the F-keys, arrows, Insert…Page Down, Right Alt and Right Ctrl. "
+                              "A key you bind stops working normally in every program, which can seriously affect normal use of your computer.\n\n"
+                              "Using this feature is not recommended."),
+                 fg="#dddddd", bg="#111111", font=("Segoe UI", 10), wraplength=390, justify=tk.LEFT).pack(anchor="w", padx=24)
+        try: win.grab_set()
+        except Exception: pass
+
     def show_main_screen():
         ui_root.osd_preview_mode = False
         if 'start_fade' in globals(): globals()['start_fade'](0.95)
@@ -2706,7 +3420,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         win_w, win_h = WIN_W, WIN_H
         pad = 14
         settings_bg_frame.update_idletasks()
-        _slide_in_up(settings_bg_frame, pad, win_w-pad*2, win_h-pad*2, pad, -win_h)   # сверху вниз
+        _slide_in_up(settings_bg_frame, ext_offset() + pad, win_w-pad*2, win_h-pad*2, pad, -win_h)   # сверху вниз
 
     _slide_token = {"n": 0}
     def _slide_in_up(frame, x, w, h, y_final, from_y, dur_ms=320):
@@ -2720,8 +3434,11 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             if tok != _slide_token["n"] or not frame.winfo_manager(): return
             t = min(1.0, (time.perf_counter() - t0) * 1000.0 / dur_ms)
             f = (1 - 2 ** (-10 * t)) / _EXP_LIM
+            t_frame = time.perf_counter()
             frame.place_configure(y=from_y + (y_final - from_y) * f)
-            if t < 1.0: ui_root.after(15, tick)
+            if t < 1.0:
+                spent = (time.perf_counter() - t_frame) * 1000.0
+                ui_root.after(max(1, int(16.6 - spent)), tick)
         tick()
 
     def open_config_screen(sc):
@@ -2758,6 +3475,8 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         var_sec.set(str(cfg.get("SecondActionTime", -1)) if cfg.get("SecondActionTime") != -1 else "")
         var_clean_keep.set(cfg.get("CleanKeep", ""))
         var_media.set(next((m[1] for m in MEDIA_KEYS if m[0] == cfg.get("MediaKey", "playpause")), MEDIA_KEYS[0][1]))
+        _set_action_rows(_get_actions(cfg))
+        var_mic_mode.set(next((m[1] for m in MIC_MODES if m[0] == cfg.get("MicMode", "toggle")), MIC_MODES[0][1]))
         var_admin_bool.set(True if cfg.get("AdminRights") == 1 else False)
         var_vol_dir.set("Up (+)" if cfg.get("VolumeDirection", 1) == 1 else "Down (-)")
         var_vol_mode.set(_VM_STEPS if cfg.get("VolumeMode") == "steps" else _VM_SLIDER)
@@ -2778,7 +3497,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         ch_sel[:] = [n for n in cr.get("list", []) if n in ch_names]
         hotkey_list[:] = [str(k) for k in cfg.get("Hotkey", [])]
         
-        opts = [tr("None")] + [SC_NAMES[k] for k in SC_NAMES if k != current_edit_sc and k not in LOCKED_SC]
+        opts = [tr("None")] + [SC_NAMES[k] for k in SC_NAMES if k != current_edit_sc and k not in LOCKED_SC and k in allowed_keys]
         row_volpair.winfo_children()[1].configure(values=opts)
         _pair = str(cfg.get("Pair", "-1"))
         var_vol_pair.set(SC_NAMES[_pair] if (cfg.get("Type") == "volume" and _pair in SC_NAMES and _pair != current_edit_sc) else tr("None"))
@@ -2792,7 +3511,7 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         pad = 14
         
         config_bg_frame.update_idletasks()   # сначала раскладка и отрисовка, потом показ
-        _slide_in_up(config_bg_frame, pad, win_w-pad*2, win_h-pad*2, pad, win_h)
+        _slide_in_up(config_bg_frame, ext_offset() + pad, win_w-pad*2, win_h-pad*2, pad, win_h)
 
     draw_numpad()
 
@@ -3242,10 +3961,11 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         label.pack(fill=tk.BOTH, expand=True)
         
         def start_drag(e):
-            if cfg.get("interactive", True): win.x, win.y = e.x, e.y
+            if cfg.get("interactive", True): win._mv = (e.x_root - win.winfo_x(), e.y_root - win.winfo_y())
         def do_drag(e):
-            if cfg.get("interactive", True):
-                new_x, new_y = win.winfo_x() + e.x - win.x, win.winfo_y() + e.y - win.y
+            off = getattr(win, "_mv", None)
+            if cfg.get("interactive", True) and off:
+                new_x, new_y = e.x_root - off[0], e.y_root - off[1]
                 win.geometry(f"+{new_x}+{new_y}")
                 MACRO_CONFIG[sc]["Overlay"]["x"] = new_x
                 MACRO_CONFIG[sc]["Overlay"]["y"] = new_y
@@ -3475,6 +4195,62 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)   # старые версии
         return ctypes.cast(iface, ctypes.POINTER(IAudioEndpointVolume))
 
+    # ---- microphone mute ----
+    # All mic commands go through ONE worker thread, in order: a quick push-to-talk press and
+    # release can never arrive swapped, and the keyboard hook never waits for audio calls.
+    mic_queue = queue.Queue()
+    mic_worker = {"t": None}
+
+    def _get_mic_endpoint():
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import IAudioEndpointVolume
+        dev = None
+        try: dev = AudioUtilities.GetMicrophone()
+        except Exception: dev = None
+        if dev is None:
+            dev = AudioUtilities.GetDeviceEnumerator().GetDefaultAudioEndpoint(1, 0)   # eCapture, eConsole
+        ev = getattr(dev, "EndpointVolume", None)          # newer pycaw
+        if ev is not None: return ev
+        iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)   # older pycaw
+        return ctypes.cast(iface, ctypes.POINTER(IAudioEndpointVolume))
+
+    def _mic_loop():
+        try:
+            import comtypes
+            comtypes.CoInitialize()
+        except Exception:
+            pass
+        while True:
+            cmd, mute, osd = mic_queue.get()
+            try:
+                ev = _get_mic_endpoint()        # fetched each time: the default mic may change
+                cur = bool(ev.GetMute())
+                new = (not cur) if cmd == "toggle" else bool(mute)
+                if new != cur: ev.SetMute(1 if new else 0, None)
+                if osd: show_osd("🔇 Mic muted" if new else "🎤 Mic on")
+            except Exception as e:
+                _runlog("MIC ERROR: " + repr(e))
+                if osd: show_osd("✗ Microphone not found")
+
+    def mic_command(cmd, mute=None, osd=True):
+        if mic_worker["t"] is None or not mic_worker["t"].is_alive():
+            mic_worker["t"] = threading.Thread(target=_mic_loop, daemon=True, name="mic")
+            mic_worker["t"].start()
+        mic_queue.put((cmd, mute, osd))
+
+    def _mic_on_press(cfg):
+        mode = cfg.get("MicMode", "toggle")
+        if mode == "ptt": mic_command("set", False, osd=False)
+        elif mode == "ptm": mic_command("set", True, osd=False)
+        else:
+            play_action_sound()
+            mic_command("toggle")
+
+    def _mic_on_release(cfg):
+        mode = cfg.get("MicMode", "toggle")
+        if mode == "ptt": mic_command("set", True, osd=False)
+        elif mode == "ptm": mic_command("set", False, osd=False)
+
     def change_vol(d, target_proc="spotify.exe", mode="process", levels=None):
         delay = 120
         try:
@@ -3638,6 +4414,90 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             hk_keys = list(cfg.get("Hotkey", []))
             threading.Thread(target=lambda: send_hotkey(hk_keys), daemon=True).start()
 
+    # ================= Launch\\Close app: действия по триггерам =================
+    EXEC_CLICK_WINDOW = 0.5   # пауза, после которой серия нажатий считается законченной
+    EXEC_HOLD_MIN = 0.3       # короче этого — это клик, а не удержание
+    exec_clicks = {}
+
+    def _get_actions(cfg):
+        acts = cfg.get("Actions")
+        if isinstance(acts, list): return acts
+        # старые настройки: ActionTime — действие по задержке/клику, SecondActionTime — удержание
+        out = []
+        try: act = float(cfg.get("ActionTime", 0) or 0)
+        except (TypeError, ValueError): act = 0.0
+        if act > 0: out.append({"trigger": "hold", "value": act, "action": "launch"})
+        else: out.append({"trigger": "count", "value": 1, "action": "launch"})
+        try: sec = float(cfg.get("SecondActionTime", -1) or -1)
+        except (TypeError, ValueError): sec = -1.0
+        if sec > 0: out.append({"trigger": "hold", "value": sec, "action": "close"})
+        return out
+
+    def _usable_path(p):
+        return bool(p) and p not in ("-1", ".") and os.path.isfile(p)
+
+    def _resolve_exec_path(proc, path):
+        """Path for launching: the saved one, or the exe of the picked app (from the app catalog)."""
+        if _usable_path(path): return path
+        info = app_info(proc)
+        if info and _usable_path(info.get("path")): return info["path"]
+        return path
+
+    def _run_exec_action(cfg, action):
+        path, proc, admin = cfg.get("Path"), cfg.get("ProcessName"), cfg.get("AdminRights") == 1
+        play_action_sound()
+        if action in ("launch", "restart"):
+            path = _resolve_exec_path(proc, path)
+            if not _usable_path(path):
+                show_osd("✗ App path not set. Open the button and choose the app again.")
+                return
+        if action == "launch":
+            manage_app(proc, path, run_as_user=not admin, action="launch")
+        elif action == "close":
+            manage_app(proc, path, action="close")
+        elif action == "restart":
+            manage_app(proc, path, action="close")
+            threading.Timer(1.0, lambda: manage_app(proc, path, run_as_user=not admin, action="launch")).start()
+        elif action == "tray":
+            ui_root.after(0, ui_root.withdraw)
+
+    def _exec_count_action(cfg, counts, n):
+        a = next((x for x in counts if int(x["value"]) == n), None)
+        if a: _run_exec_action(cfg, a["action"])
+
+    def _exec_fire_clicks(sc):
+        cs = exec_clicks.get(sc)
+        if not cs: return
+        n = cs["n"]; cs["n"] = 0; cs["timer"] = None
+        cfg = MACRO_CONFIG.get(str(sc))
+        if not cfg: return
+        counts = [a for a in _get_actions(cfg) if a.get("trigger") == "count"]
+        _exec_count_action(cfg, counts, n)
+
+    def _exec_release(sc):
+        st = active_keys.pop(sc, None)
+        if not st or not st.get("exec"): return
+        cfg = MACRO_CONFIG.get(str(sc))
+        if not cfg: return
+        acts = _get_actions(cfg)
+        dur = time.time() - st["t0"]
+        holds = [a for a in acts if a.get("trigger") == "hold"]
+        if holds and dur >= EXEC_HOLD_MIN:
+            best = min(holds, key=lambda a: abs(float(a["value"]) - dur))
+            _run_exec_action(cfg, best["action"])
+            return
+        counts = [a for a in acts if a.get("trigger") == "count"]
+        cs = exec_clicks.setdefault(sc, {"n": 0, "timer": None})
+        cs["n"] += 1
+        if cs["timer"]:
+            cs["timer"].cancel(); cs["timer"] = None
+        if any(int(a["value"]) >= 2 for a in counts):
+            cs["timer"] = threading.Timer(EXEC_CLICK_WINDOW, _exec_fire_clicks, args=(sc,))
+            cs["timer"].start()
+        else:
+            n = cs["n"]; cs["n"] = 0
+            _exec_count_action(cfg, counts, n)
+
     # ================= ЯДЕРНЫЙ ХУК =================
     def handle_press(sc):
         sc_str = str(sc)
@@ -3664,6 +4524,17 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                     vol_thread = threading.Thread(target=volume_repeater, daemon=True); vol_thread.start()
             return
 
+        if t == "exec":
+            if sc not in active_keys:
+                active_keys[sc] = {'exec': True, 't0': time.time()}
+            return
+
+        if t == "mic":
+            if sc not in active_keys:          # key repeat while holding is ignored
+                active_keys[sc] = {'mic': True}
+                _mic_on_press(cfg)
+            return
+
         if sc not in active_keys:
             act_time, sec_time = float(cfg.get("ActionTime", 0)), float(cfg.get("SecondActionTime", -1))
             if t == "crosshair" and (cfg.get("Crosshair") or {}).get("mode") == "smart":
@@ -3686,6 +4557,14 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
             if sc in active_keys: del active_keys[sc]
             if not any(MACRO_CONFIG.get(str(k), {}).get("Type") == "volume" for k in active_keys):
                 global vol_dir; vol_dir = 0
+            return
+
+        if t == "exec":
+            _exec_release(sc)
+            return
+
+        if t == "mic":
+            if active_keys.pop(sc, None) is not None: _mic_on_release(cfg)
             return
 
         if sc in active_keys:
@@ -3713,7 +4592,10 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
                 if nCode >= 0:
                     kb = ctypes.cast(lParam, ctypes.POINTER(KBDLL)).contents
                     sc, fl = kb.sc, kb.fl
-                    if not (fl & 0x10) and not (fl & 1) and macro_enabled and str(sc) not in LOCKED_SC and str(sc) in MACRO_CONFIG and MACRO_CONFIG[str(sc)].get("Type") != "none":
+                    # Extended keys (flag 1) are stored as scan + 256: numpad Enter = 284, Up = 328...
+                    # Only keys in allowed_keys are taken over: the numpad, plus the extended block when it is on.
+                    if fl & 1: sc = sc + 256
+                    if not (fl & 0x10) and macro_enabled and str(sc) in allowed_keys and str(sc) not in LOCKED_SC and str(sc) in MACRO_CONFIG and MACRO_CONFIG[str(sc)].get("Type") != "none":
                         if wParam in (0x0100, 0x0104): 
                             handle_press(sc); return 1
                         elif wParam in (0x0101, 0x0105): 

@@ -14,7 +14,7 @@ crosshair, or run your own script from a module.
 
 ## Download ↓↓↓
 
-[numbinder latest ver.](https://github.com/giozzik/numbinder/archive/refs/tags/v1.35.0.zip)
+[numbinder latest ver.](https://github.com/giozzik/numbinder/archive/refs/tags/v1.36.0.zip)
 
 that's the latest version, don't forget to read [INSTALL.txt](INSTALL.txt)
 or at least drop it in AI and ask it to tell you what to do
@@ -31,6 +31,8 @@ All versions: [Releases](https://github.com/giozzik/numbinder/releases)
 - **Volume**: for one app, the active window or the whole system. Smooth or
   step mode. Pair two keys for up and down.
 - **Media control**: play/pause, next, previous, stop, mute.
+- **Microphone mute**: mutes your mic in all apps at once (Discord, games, calls).
+  Toggle, push to talk or push to mute.
 - **Switch layout**, **Simple macro** (any key combination),
   **Overlay** (an image on screen), **Crosshair** (made in the built-in designer).
 - **clean2;0**: hold to close extra apps, with a keep-open list.
