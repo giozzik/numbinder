@@ -14,7 +14,7 @@ crosshair, or run your own script from a module.
 
 ## Download ↓↓↓
 
-[numbinder latest ver.](https://github.com/giozzik/numbinder/archive/refs/tags/v1.36.0.zip)
+[numbinder latest ver.](https://github.com/giozzik/numbinder/archive/refs/tags/v1.40.0.zip)
 
 that's the latest version, don't forget to read [INSTALL.txt](INSTALL.txt)
 or at least drop it in AI and ask it to tell you what to do
@@ -40,6 +40,12 @@ All versions: [Releases](https://github.com/giozzik/numbinder/releases)
 
 Apps are picked from one list with names and icons, including apps that are
 not running yet.
+
+**Profiles**: keep several full sets of buttons (for example, Games and Work).
+Switch with the ▤ button, with a key, or automatically: a profile can turn on
+by itself while a chosen app is in front.
+
+Right-click any button to copy, paste or clear it.
 
 Experimental: **Extended keyboard** (Settings → Experimental) also lets you bind
 the F-keys, arrows, Insert…Page Down, Right Alt and Right Ctrl.

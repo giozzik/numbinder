@@ -75,6 +75,7 @@ import re
 import base64
 import webbrowser
 import collections
+import copy
 
 # Windows timers tick every 15.6 ms by default, so Tk's after(16) really waits ~31 ms (~30 fps).
 # 1 ms resolution lets animations run at a real ~60 fps.
@@ -114,10 +115,25 @@ try:
         sys.exit(0)
 
     # ================= НАСТРОЙКИ =================
-    VERSION = "v1.36.0"
-    BUILD = 20                    # номер сборки: растёт на 1 при каждом релизе
+    VERSION = "v1.40.0"
+    BUILD = 28                    # номер сборки: растёт на 1 при каждом релизе
     GH_REPO = "giozzik/numbinder"
     CHANGELOG = [
+        ("v1.40.0", ["Profiles: several full sets of buttons. Switch with the ▤ button in the main window.",
+                     "Profiles can switch by themselves: pick apps for a profile and it turns on while one of them is in front.",
+                     "New button type: Switch profile (next profile, or one you pick).",
+                     "Right-click a button: Edit, Copy, Paste, Clear."]),
+        ("v1.39.0", ["Modules can run in the background: an optional start(ctx) is called when numbinder starts.",
+                     "Module lists can name their cards (item_label)."]),
+        ("v1.38.1", ["Module preset lists: each preset is its own card with full-width fields, nothing is cut off."]),
+        ("v1.38.0", ["Module preset lists: several choices at once (\"multi\" columns), typed values (\"entry\" columns).",
+                     "Module preset lists always fit the panel; the ✕ delete button is clearly visible."]),
+        ("v1.37.1", ["Module preset lists: long names are no longer cut off in the open dropdown."]),
+        ("v1.37.0", ["Modules can now have their own preset list in the button settings (MODULE[\"rows\"], see MODULES_GUIDE.txt)."]),
+        ("v1.36.2", ["Crosshair button: its own position sliders (X and Y), added to the designer position.",
+                     "Extended keyboard: ✕ on the warning plate, with an option to hide it for good.",
+                     "Settings → Experimental: Show warning plate switch."]),
+        ("v1.36.1", ["Crosshair designer: position on screen (X and Y sliders 0–200, 100 = center, 1 step = 1 px). Moves the crosshair live."]),
         ("v1.36.0", ["New button type: Microphone mute. Mutes the default mic in all apps at once.",
                      "Modes: toggle (press), push to talk (hold), push to mute (hold)."]),
         ("v1.35.0", ["Smoother interface: animations run at ~60 fps (1 ms Windows timer).",
@@ -377,6 +393,42 @@ try:
         if _k.isdigit() and isinstance(_v, dict) and isinstance(_v.get("Crosshair"), dict):
             if _v["Crosshair"].get("name") == _OLD_DEF: _v["Crosshair"]["name"] = "Default"
 
+    # ================= ПРОФИЛИ (данные) =================
+    # Кнопки активного профиля лежат, как и раньше, в корне конфига (ключи-цифры).
+    # Остальные профили хранятся в MACRO_CONFIG["Profiles"][имя]. Переключение меняет их местами.
+    if not isinstance(MACRO_CONFIG.get("Profiles"), dict): MACRO_CONFIG["Profiles"] = {}
+    if not isinstance(MACRO_CONFIG.get("ProfileMeta"), dict): MACRO_CONFIG["ProfileMeta"] = {}
+    if MACRO_CONFIG.get("ActiveProfile") not in MACRO_CONFIG["Profiles"]:
+        MACRO_CONFIG["ActiveProfile"] = str(MACRO_CONFIG.get("ActiveProfile") or "Default")
+        MACRO_CONFIG["Profiles"].setdefault(MACRO_CONFIG["ActiveProfile"], {})
+    if MACRO_CONFIG.get("BaseProfile") not in MACRO_CONFIG["Profiles"]:
+        MACRO_CONFIG["BaseProfile"] = MACRO_CONFIG["ActiveProfile"]
+    for _n in MACRO_CONFIG["Profiles"]:
+        if not isinstance(MACRO_CONFIG["ProfileMeta"].get(_n), dict): MACRO_CONFIG["ProfileMeta"][_n] = {"apps": ""}
+
+    def _profile_swap(name):
+        """Moves the buttons of profile `name` into the root of the config. Data only, no UI."""
+        cur = MACRO_CONFIG["ActiveProfile"]
+        if name == cur or name not in MACRO_CONFIG["Profiles"]: return False
+        keys = [k for k, v in list(MACRO_CONFIG.items()) if k.isdigit() and isinstance(v, dict)]
+        MACRO_CONFIG["Profiles"][cur] = {k: MACRO_CONFIG[k] for k in keys}
+        new = MACRO_CONFIG["Profiles"].get(name) or {}
+        for k in set(keys) | {k for k in new if str(k).isdigit()}:
+            v = new.get(k)
+            if not isinstance(v, dict):
+                v = copy.deepcopy(MACRO_TEMPLATE)      # key not set in this profile: an empty button
+            else:
+                for tk_ in ("Overlay", "Crosshair", "Hotkey"):
+                    if tk_ not in v: v[tk_] = copy.deepcopy(MACRO_TEMPLATE[tk_])
+            MACRO_CONFIG[k] = v                        # assigned, never removed: the key hook reads this dict
+        MACRO_CONFIG["Profiles"][name] = {}
+        MACRO_CONFIG["ActiveProfile"] = name
+        return True
+
+    # numbinder was closed while an app profile was active: start from the profile you chose yourself
+    if MACRO_CONFIG["ActiveProfile"] != MACRO_CONFIG["BaseProfile"]:
+        _profile_swap(MACRO_CONFIG["BaseProfile"])
+
     if MACRO_CONFIG.get("_version") != VERSION:
         MACRO_CONFIG["_version"] = VERSION
         with open(PATH_CONFIG, "w", encoding="utf-8") as f: json.dump(MACRO_CONFIG, f, indent=4, ensure_ascii=False)
@@ -405,6 +457,8 @@ try:
         "light macro": "Presses the key combination (hotkey) you record.",
         "clean": "clean2;0: on hold, closes your running apps. Use Keep open to list apps that must stay open.",
         "media": "Presses a media key: play/pause, next or previous track, stop or mute. Works with any player.",
+        "profile": "Switches to another profile (another set of buttons). Next profile, or one you pick. "
+                   "Keep a Switch profile button in every profile, so you can get back.",
         "mic": "Mutes your default microphone in all apps at once (Discord, games, calls). Toggle, push to talk or push to mute.",
     }
     # (config key, label, Windows virtual-key code)
@@ -432,6 +486,7 @@ try:
             "clean": _L("clean2;0 — close extra processes", "clean2;0 — close extra processes"),
             "media": _L("Media control", "Media control"),
             "mic": _L("Microphone mute", "Microphone mute"),
+            "profile": _L("Switch profile", "Switch profile"),
         }
 
     def type_to_label(t):
@@ -468,7 +523,9 @@ try:
                 info = getattr(mod, "MODULE", None)
                 if not isinstance(info, dict) or not info.get("id") or not callable(getattr(mod, "run", None)):
                     raise ValueError("module has no MODULE['id'] or run(ctx, cfg) function")
-                MODULES[str(info["id"])] = {"info": info, "run": mod.run, "file": fn}
+                start = getattr(mod, "start", None)
+                MODULES[str(info["id"])] = {"info": info, "run": mod.run, "file": fn,
+                                            "start": start if callable(start) else None}
             except Exception:
                 _runlog(f"MODULE LOAD FAILED {fn}:\n" + traceback.format_exc())
         # старая кнопка «Layout Fixer» -> модуль layout_fixer
@@ -492,6 +549,17 @@ try:
             save_config()
 
     _load_modules()
+
+    def _start_modules():
+        """Optional hook: a module with start(ctx) gets it called once after numbinder starts,
+        in its own thread (for background work, e.g. listening to a game)."""
+        for mid, m in list(MODULES.items()):
+            fn = m.get("start")
+            if not fn: continue
+            def _go(fn=fn, mid=mid):
+                try: fn(ModuleContext(mid))
+                except Exception: _runlog(f"MODULE START FAILED {mid}:\n" + traceback.format_exc())
+            threading.Thread(target=_go, daemon=True, name=f"mod-start-{mid}").start()
 
     # ================= АВТООБНОВЛЕНИЕ (GitHub Releases) =================
     def _http_get(url, timeout=15):
@@ -1560,6 +1628,18 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         AnimatedSwitch(ext_row, ext_var, bg=_bg, command=on_ext_toggle).pack(side=tk.RIGHT)
         tk.Label(settings_content, text=tr("Bind the F-keys, arrows, Insert…Page Down, Right Alt and Right Ctrl. Not recommended."),
                  bg=_bg, fg="#e05a4f", font=("Segoe UI", 9), wraplength=330, justify=tk.LEFT).pack(anchor="w", padx=40, pady=(2, 6))
+        plate_var = tk.BooleanVar(value=not MACRO_CONFIG["AppSettings"].get("ext_banner_hidden", False))
+        def on_plate_toggle():
+            show = bool(plate_var.get())
+            MACRO_CONFIG["AppSettings"]["ext_banner_hidden"] = not show
+            if show: ext_banner_state["session_hidden"] = False
+            save_config()
+            try: draw_numpad()
+            except Exception: pass
+        plate_row = tk.Frame(settings_content, bg=_bg)
+        plate_row.pack(fill=tk.X, padx=40, pady=(2, 6))
+        tk.Label(plate_row, text=tr("Show warning plate"), bg=_bg, fg="#e8e8e8", font=("Segoe UI", 11)).pack(side=tk.LEFT)
+        AnimatedSwitch(plate_row, plate_var, bg=_bg, command=on_plate_toggle).pack(side=tk.RIGHT)
 
         if MACRO_CONFIG["AppSettings"].get("dev_unlocked", False):
             dev_var = tk.BooleanVar(value=MACRO_CONFIG["AppSettings"].get("dev_enabled", False))
@@ -1618,6 +1698,11 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
 
     def current_layout():
         return NUMPAD_LAYOUT + (EXT_LAYOUT if extended_on() else [])
+
+    ext_banner_state = {"session_hidden": False}   # hidden with ✕ until the next start
+
+    def ext_banner_visible():
+        return extended_on() and not ext_banner_state["session_hidden"] and not MACRO_CONFIG.get("AppSettings", {}).get("ext_banner_hidden", False)
 
     allowed_keys = set()   # keys the hook may take over; read by the hook thread
     def update_allowed_keys():
@@ -2019,6 +2104,9 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         controls_sub_fr = tk.Frame(header_frame, bg=dev.get("theme_grad_top", "#2a2a2a"))
         controls_sub_fr.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
         
+        RoundBtn(controls_sub_fr, text=f"▤ {MACRO_CONFIG.get('ActiveProfile', 'Default')} ▾", bg="#2d2d2d", fg="#ffffff",
+                 font=("Segoe UI", 8, "bold"), borderwidth=0, cursor="hand2",
+                 command=lambda: open_profile_menu()).pack(side=tk.LEFT, ipady=2, ipadx=6, padx=(0, 6))
         if MACRO_CONFIG["AppSettings"].get("dev_enabled", False):
             RoundBtn(controls_sub_fr, text="🛠️ DEV SANDBOX", bg="#f5d142", fg="#000", font=("Segoe UI", 8, "bold"), borderwidth=0, cursor="hand2", command=open_dev_sandbox).pack(side=tk.LEFT, ipady=2, ipadx=5)
         
@@ -2039,12 +2127,19 @@ Only install modules whose code you trust: ones you wrote yourself or got from a
         color_active = dev.get("color_active", "#1db954")
         color_inactive = dev.get("color_inactive", "#3a3a3a")
         
-        if ext_w:
-            # big red warning plate at the bottom
-            plate = tk.Label(canvas_numpad, text=tr("⚠  EXTENDED KEYBOARD IS ON (experimental)\nIt can break normal keyboard use. Turning it off in Settings is recommended."),
-                             bg="#c62828", fg="#ffffff", font=("Segoe UI", 11, "bold"), justify=tk.CENTER, cursor="hand2", pady=10)
+        if ext_w and ext_banner_visible():
+            # big red warning plate at the bottom, with ✕ to hide it
+            plate = tk.Frame(canvas_numpad, bg="#c62828")
+            close_x = tk.Label(plate, text="✕", bg="#c62828", fg="#ffffff", font=("Segoe UI", 14, "bold"), cursor="hand2", padx=14)
+            close_x.pack(side=tk.RIGHT, fill=tk.Y)
+            close_x.bind("<Enter>", lambda e: close_x.config(bg="#a31f18"))
+            close_x.bind("<Leave>", lambda e: close_x.config(bg="#c62828"))
+            close_x.bind("<Button-1>", lambda e: on_ext_banner_close())
+            plate_lbl = tk.Label(plate, text=tr("⚠  EXTENDED KEYBOARD IS ON (experimental)\nIt can break normal keyboard use. Turning it off in Settings is recommended."),
+                                 bg="#c62828", fg="#ffffff", font=("Segoe UI", 11, "bold"), justify=tk.CENTER, cursor="hand2", pady=10)
+            plate_lbl.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(14, 0))
+            plate_lbl.bind("<Button-1>", lambda e: show_settings_screen())
             canvas_numpad.create_window(win_w / 2, win_h - 22, window=plate, anchor="s", width=win_w - 44)
-            plate.bind("<Button-1>", lambda e: show_settings_screen())
 
         for btn in current_layout():
             sc, col, row, col_span, row_span = btn
@@ -2579,6 +2674,15 @@ foreach ($k in @($found.Keys)) {
     row_proc = create_app_row(config_content, "Process", var_proc, multi=False, hover_text=tr("The app this button controls."), ext_text=tr("Pick the app from the list. Apps that are not running yet are taken from the Start menu. Icons are shown next to each app."))
     row_act = create_input_row(config_content, "ActionTime", var_act, tr("Delay before triggering (sec)."), tr("Set 0 to trigger instantly on click."))
     row_sec = create_input_row(config_content, "Hold To Action", var_sec, tr("Long hold (sec)."), tr("Hold time for the second action. Set 1.0 for the overlay."))
+    _ensure_dark_combobox_style()
+    _pr_bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020")
+    PROFILE_NEXT = "Next profile"
+    var_profile_target = tk.StringVar(value=PROFILE_NEXT)
+    row_profile = tk.Frame(config_content, bg=_pr_bg)
+    tk.Label(row_profile, text=tr("Profile"), fg="#e8e8e8", bg=_pr_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
+    cb_profile = ttk.Combobox(row_profile, textvariable=var_profile_target, values=[PROFILE_NEXT], state="readonly",
+                              font=("Segoe UI", 10), style="Dark.TCombobox")
+    cb_profile.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0), ipady=2)
     MIC_MODES = [("toggle", "Toggle (press)"), ("ptt", "Push to talk (hold)"), ("ptm", "Push to mute (hold)")]
     var_mic_mode = tk.StringVar(value=MIC_MODES[0][1])
     row_mic_mode = create_dropdown_row(config_content, "Mode", var_mic_mode, [m[1] for m in MIC_MODES], tr("How the button controls the microphone."),
@@ -2640,6 +2744,142 @@ foreach ($k in @($found.Keys)) {
     RoundBtn(actions_box, text="+ Add action", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 9), borderwidth=0, cursor="hand2",
              command=lambda: _add_action_row()).pack(fill=tk.X, pady=(6, 0), ipady=4)
 
+    # ---- module presets: a module can describe a list of rows (MODULE["rows"]) ----
+    # Column types: "choice" (dropdown, default), "multi" (several at once, checkbox list), "entry" (typed text).
+    # Each row is a card (title + ✕, then one full-width line per column), so nothing is squeezed.
+    _mr_bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020")
+    modrows_box = tk.Frame(config_content, bg=_mr_bg)
+    modrows_title = tk.Label(modrows_box, text="", fg="#e8e8e8", bg=_mr_bg, font=("Segoe UI", 10))
+    modrows_title.pack(anchor="w")
+    modrows_hint = tk.Label(modrows_box, text="", fg="#888888", bg=_mr_bg, font=("Segoe UI", 8), wraplength=330, justify=tk.LEFT)
+    modrows_hint.pack(anchor="w", pady=(0, 4))
+    modrows_grid = tk.Frame(modrows_box, bg=_mr_bg)
+    modrows_grid.pack(fill=tk.X)
+    modrows_state = {"mid": None, "cols": [], "rows": [], "initial": None, "initial_mid": None}
+
+    def _modrows_info(mid):
+        r = (MODULES.get(mid, {}).get("info", {}) or {}).get("rows")
+        return r if isinstance(r, dict) and r.get("columns") else None
+
+    def _multi_text(sel):
+        return " + ".join(sel) if sel else "Off"
+
+    def _open_multi(rec, key, col, widget):
+        """Checkbox list for a "multi" column, opened under the field."""
+        bgc = "#1e1e1e"
+        win = tk.Toplevel(ui_root)
+        win.overrideredirect(True)
+        win.configure(bg="#3a3a3a")
+        win.attributes("-topmost", True)
+        inner = tk.Frame(win, bg=bgc); inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+        cur = set(rec["vals"][key]["value"])
+        bvars = []
+        for ch in col.get("choices", []):
+            v = tk.BooleanVar(value=ch in cur)
+            tk.Checkbutton(inner, text=ch, variable=v, bg=bgc, fg="#e8e8e8", selectcolor="#2d2d2d",
+                           activebackground="#2a2a2a", activeforeground="#ffffff", font=("Segoe UI", 10),
+                           anchor="w", cursor="hand2", highlightthickness=0, bd=0).pack(fill=tk.X, padx=8, pady=1)
+            bvars.append((ch, v))
+        def done(_e=None):
+            sel = [ch for ch, v in bvars if v.get()]
+            rec["vals"][key]["value"] = sel
+            try: widget.config(text=_multi_text(sel) + "  ▾")
+            except Exception: pass
+            try: win.destroy()
+            except Exception: pass
+        RoundBtn(inner, text=tr("Done"), bg="#1db954", fg="#000000", font=("Segoe UI", 9, "bold"), borderwidth=0,
+                 cursor="hand2", command=done).pack(fill=tk.X, padx=8, pady=(6, 8), ipady=3)
+        win.update_idletasks()
+        x, y = widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height() + 2
+        sh = win.winfo_screenheight()
+        if y + win.winfo_reqheight() > sh - 40: y = max(0, widget.winfo_rooty() - win.winfo_reqheight() - 2)
+        win.geometry(f"+{x}+{y}")
+        win.bind("<Escape>", done)
+        win.focus_force()
+
+    def _modrows_renumber():
+        for i, rec in enumerate(modrows_state["rows"], start=1):
+            item = (_modrows_info(modrows_state["mid"]) or {}).get("item_label", "Preset")
+            try: rec["title"].config(text=f"{tr(item)} {i}")
+            except Exception: pass
+
+    def _modrow_add(values=None):
+        """One preset = one card: a title with ✕, then one line per column with a full-width field."""
+        _ensure_dark_combobox_style()
+        card_bg = "#262626"
+        card = tk.Frame(modrows_grid, bg=card_bg)
+        card.pack(fill=tk.X, pady=4)
+        rec = {"vals": {}, "frame": card}
+        top = tk.Frame(card, bg=card_bg)
+        top.pack(fill=tk.X, padx=8, pady=(6, 2))
+        rec["title"] = tk.Label(top, text="", fg="#aaaaaa", bg=card_bg, font=("Segoe UI", 9, "bold"))
+        rec["title"].pack(side=tk.LEFT)
+        def _rm(rec=rec):
+            try: rec["frame"].destroy()
+            except Exception: pass
+            if rec in modrows_state["rows"]: modrows_state["rows"].remove(rec)
+            _modrows_renumber()
+        x_btn = tk.Label(top, text="✕", bg="#4a2323", fg="#ff7b72", font=("Segoe UI", 10, "bold"), cursor="hand2", padx=8)
+        x_btn.bind("<Enter>", lambda e: x_btn.config(bg="#c62828", fg="#ffffff"))
+        x_btn.bind("<Leave>", lambda e: x_btn.config(bg="#4a2323", fg="#ff7b72"))
+        x_btn.bind("<Button-1>", lambda e: _rm())
+        x_btn.pack(side=tk.RIGHT)
+
+        for c in modrows_state["cols"]:
+            ctype = c.get("type", "choice")
+            given = (values or {}).get(c["key"], c.get("default"))
+            line = tk.Frame(card, bg=card_bg)
+            line.pack(fill=tk.X, padx=8, pady=2)
+            tk.Label(line, text=c.get("label", c["key"]), fg="#cccccc", bg=card_bg, font=("Segoe UI", 9),
+                     width=12, anchor="nw").pack(side=tk.LEFT, anchor="n", pady=(4, 0))
+            if ctype == "multi":
+                ch = [str(x) for x in c.get("choices", [])]
+                if isinstance(given, str): given = [given]
+                sel = [x for x in (given or []) if x in ch]
+                rec["vals"][c["key"]] = {"value": sel}
+                w = tk.Label(line, text=_multi_text(sel) + "  ▾", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10),
+                             anchor="w", justify=tk.LEFT, wraplength=200, padx=6, pady=4, cursor="hand2")
+                w.bind("<Button-1>", lambda e, r=rec, k=c["key"], col=c, ww=w: _open_multi(r, k, col, ww))
+                w.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            elif ctype == "entry":
+                v = tk.StringVar(value=str(given if given is not None else ""))
+                rec["vals"][c["key"]] = v
+                tk.Entry(line, textvariable=v, width=1, justify="center", bg="#2d2d2d", fg="#ffffff",
+                         insertbackground="#ffffff", borderwidth=0, font=("Segoe UI", 10)).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+            else:
+                ch = [str(x) for x in c.get("choices", [])]
+                v = tk.StringVar(value=str(given if given is not None else (ch[0] if ch else "")))
+                if ch and v.get() not in ch: v.set(ch[0])
+                rec["vals"][c["key"]] = v
+                ttk.Combobox(line, textvariable=v, values=ch, state="readonly", width=1,
+                             style="Dark.TCombobox").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Frame(card, bg=card_bg, height=4).pack(fill=tk.X)
+        modrows_state["rows"].append(rec)
+        _modrows_renumber()
+
+    def _modrows_build(mid, values_list):
+        for w in modrows_grid.winfo_children(): w.destroy()
+        modrows_state["rows"] = []
+        info = _modrows_info(mid) or {}
+        modrows_state["mid"] = mid
+        modrows_state["cols"] = list(info.get("columns", []))
+        modrows_title.config(text=info.get("title", "Presets"))
+        modrows_hint.config(text=info.get("hint", ""))
+        for v in values_list or []:
+            if isinstance(v, dict): _modrow_add(v)
+
+    def _modrows_collect():
+        out = []
+        for r in modrows_state["rows"]:
+            row = {}
+            for k, v in r["vals"].items():
+                row[k] = list(v["value"]) if isinstance(v, dict) else v.get()
+            out.append(row)
+        return out
+
+    RoundBtn(modrows_box, text="+ Add preset", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 9), borderwidth=0, cursor="hand2",
+             command=lambda: _modrow_add()).pack(fill=tk.X, pady=(6, 0), ipady=4)
+
     row_clean_keep = create_app_row(config_content, "Keep open", var_clean_keep, multi=True, hover_text=tr("Apps clean2;0 must NOT close."), ext_text=tr("Pick the apps clean2;0 must leave open. You can select several."))
     row_admin = create_switch_row(config_content, "Run as Admin", var_admin_bool, tr("Run as administrator."), tr("The program will be launched with maximum rights in Windows."))
     row_voltarget = create_dropdown_row(config_content, tr("Target"), var_vol_target, [_VT_PROC, _VT_ACTIVE, _VT_SYSTEM], tr("Whose volume to control."), tr("Process — the app from the Process field (for example, Spotify).\n\nActive application — the window in the foreground (its child processes too, for example in a browser).\n\nWhole system — overall Windows volume. The limit below also applies here: set it to 100 if you don't want it to interfere."), lambda e: refresh_config_ui())
@@ -2674,6 +2914,27 @@ foreach ($k in @($found.Keys)) {
         var_type.set(type_to_label("overlay"))
         refresh_config_ui()
     lbl_ch_hint_b.bind("<Button-1>", _go_overlay)
+
+    # position of this button's crosshair (added to the designer position)
+    var_ch_x = tk.IntVar(value=100)
+    var_ch_y = tk.IntVar(value=100)
+    row_ch_pos = tk.Frame(config_content, bg=_cf_bg)
+    tk.Label(row_ch_pos, text=tr("Position of this crosshair"), fg="#e8e8e8", bg=_cf_bg, font=("Segoe UI", 10)).pack(anchor="w")
+    tk.Label(row_ch_pos, text=tr("100 = no shift, 1 step = 1 pixel. Added to the position from the crosshair designer."),
+             fg="#888888", bg=_cf_bg, font=("Segoe UI", 8), wraplength=330, justify=tk.LEFT).pack(anchor="w", pady=(0, 4))
+    def _ch_pos_live(_v=None):
+        # if this button's crosshair is on screen, move it now (before Save)
+        if crosshair_state.get("win") is not None and str(crosshair_state.get("sc")) == str(current_edit_sc):
+            move_crosshair(btn=(var_ch_x.get(), var_ch_y.get()))
+    for _lbl, _var in ((tr("Horizontal (X)"), var_ch_x), (tr("Vertical (Y)"), var_ch_y)):
+        _fr = tk.Frame(row_ch_pos, bg=_cf_bg); _fr.pack(fill=tk.X, pady=4)
+        tk.Label(_fr, text=_lbl, fg="#e8e8e8", bg=_cf_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        tk.Label(_fr, textvariable=_var, fg="#1db954", bg=_cf_bg, font=("Segoe UI", 9, "bold"), width=4, anchor="e").pack(side=tk.RIGHT, padx=(5, 0))
+        FluentSlider(_fr, from_=0, to=200, variable=_var, bg=_cf_bg, command=_ch_pos_live).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0))
+    def _ch_pos_reset():
+        var_ch_x.set(100); var_ch_y.set(100); _ch_pos_live()
+    _rr_ch = tk.Frame(row_ch_pos, bg=_cf_bg); _rr_ch.pack(fill=tk.X)
+    RoundBtn(_rr_ch, text="↺", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 12), borderwidth=0, cursor="hand2", command=_ch_pos_reset).pack(side=tk.RIGHT, ipadx=9, ipady=5)
 
     def _cfg_bg():
         return MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020")
@@ -2768,7 +3029,7 @@ foreach ($k in @($found.Keys)) {
 
     def refresh_config_ui(*args):
         t = label_to_type(var_type.get())
-        for r in [row_lang, row_path, row_proc, row_act, row_sec, row_clean_keep, row_admin, row_voltarget, row_volmode, row_volsteps, row_voldir, row_volpair, sound_container, lbl_overlay_tip, row_ch_mode, row_ch_name, ch_list_container, lbl_ch_tip, row_hotkey, row_ch_designer, row_ch_hint, lbl_type_desc, row_media, actions_box, row_mic_mode]: r.pack_forget()
+        for r in [row_lang, row_path, row_proc, row_act, row_sec, row_clean_keep, row_admin, row_voltarget, row_volmode, row_volsteps, row_voldir, row_volpair, sound_container, lbl_overlay_tip, row_ch_mode, row_ch_name, ch_list_container, lbl_ch_tip, row_hotkey, row_ch_designer, row_ch_hint, lbl_type_desc, row_media, actions_box, row_mic_mode, row_ch_pos, modrows_box, row_profile]: r.pack_forget()
         
         row_icon_path.pack(fill=tk.X, padx=30, pady=2)
         row_icon_color.pack(fill=tk.X, padx=30, pady=2)
@@ -2788,6 +3049,7 @@ foreach ($k in @($found.Keys)) {
             row_volpair.pack(fill=tk.X, padx=30, pady=2)
             sound_container.pack(fill=tk.X, pady=(10, 5))
         elif t == "restart": row_act.pack(fill=tk.X, padx=30, pady=2)
+        elif t == "profile": row_profile.pack(fill=tk.X, padx=30, pady=8)
         elif t == "media": row_media.pack(fill=tk.X, padx=30, pady=2)
         elif t == "mic": row_mic_mode.pack(fill=tk.X, padx=30, pady=2)
         elif t == "overlay":
@@ -2812,6 +3074,7 @@ foreach ($k in @($found.Keys)) {
                 row_sec.pack(fill=tk.X, padx=30, pady=2)
             else:
                 row_ch_name.pack(fill=tk.X, padx=30, pady=2)
+            row_ch_pos.pack(fill=tk.X, padx=30, pady=(8, 2))
         elif t == "clean" or (t.startswith("mod:") and MODULES.get(t[4:], {}).get("info", {}).get("hold")):
             try: need_sec = float(var_sec.get() or -1) <= 0
             except ValueError: need_sec = True
@@ -2822,6 +3085,16 @@ foreach ($k in @($found.Keys)) {
             render_hotkey_chips()
             row_hotkey.pack(fill=tk.X, pady=(5, 5))
             
+        if t.startswith("mod:") and _modrows_info(t[4:]):
+            mid = t[4:]
+            if modrows_state["mid"] != mid:
+                if modrows_state["initial_mid"] == mid and modrows_state["initial"] is not None:
+                    vals = modrows_state["initial"]
+                else:
+                    vals = (_modrows_info(mid) or {}).get("default", [])
+                _modrows_build(mid, vals)
+            modrows_box.pack(fill=tk.X, padx=30, pady=(8, 2))
+
         _desc = type_description(t)
         lbl_type_desc.config(text=_desc, bg=MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#202020"))
         if _desc:
@@ -2837,7 +3110,7 @@ foreach ($k in @($found.Keys)) {
         aud_cfg = {k: v.get() for k, v in audio_vars.items()}
         current_overlay = MACRO_CONFIG.get(current_edit_sc, {}).get("Overlay", MACRO_TEMPLATE["Overlay"].copy())
         
-        act_save = 0.0 if t in ("crosshair", "light macro", "media", "exec") else float(var_act.get() or 0)
+        act_save = 0.0 if t in ("crosshair", "light macro", "media", "exec", "profile") else float(var_act.get() or 0)
         sec_save = float(var_sec.get() or -1)
         if t in ("light macro", "exec"): sec_save = -1.0
         if t == "crosshair": sec_save = max(0.1, sec_save) if var_ch_mode.get() == _CH_MODE_SMART else -1.0
@@ -2869,6 +3142,8 @@ foreach ($k in @($found.Keys)) {
             "VolumeSteps": vsteps,
             "CleanKeep": var_clean_keep.get().strip() if t == "clean" else "",
             "Actions": _collect_actions() if t == "exec" else [],
+            "ModRows": _modrows_collect() if (t.startswith("mod:") and _modrows_info(t[4:])) else [],
+            "ProfileTarget": (var_profile_target.get() if var_profile_target.get() != PROFILE_NEXT else "") if t == "profile" else "",
             "MicMode": next((m[0] for m in MIC_MODES if m[1] == var_mic_mode.get()), "toggle") if t == "mic" else "toggle",
             "MediaKey": next((m[0] for m in MEDIA_KEYS if m[1] == var_media.get()), "playpause") if t == "media" else "-1",
             "Desc": f"Macro SC {current_edit_sc}",
@@ -2876,7 +3151,8 @@ foreach ($k in @($found.Keys)) {
             "IconColor": var_icon_color.get(),
             "Audio": aud_cfg.copy(),
             "Overlay": current_overlay,
-            "Crosshair": {"mode": "smart" if var_ch_mode.get() == _CH_MODE_SMART else "toggle", "name": var_ch_name.get(), "list": list(ch_sel)},
+            "Crosshair": {"mode": "smart" if var_ch_mode.get() == _CH_MODE_SMART else "toggle", "name": var_ch_name.get(), "list": list(ch_sel),
+                          "x": int(var_ch_x.get()), "y": int(var_ch_y.get())},
             "Hotkey": list(hotkey_list)
         }
         
@@ -3040,6 +3316,43 @@ foreach ($k in @($found.Keys)) {
             ch["outline_color"] = out_color_var.get(); refresh_preview()
         out_color_var.trace_add("write", on_out_color)
         add_slider(tr("Outline opacity (%)"), "outline_opacity", 0, 100)
+
+        # --- 4. position on screen (one setting for all crosshairs) ---
+        section(tr("4. Position on screen"))
+        tk.Label(crosshair_content, text=tr("100 = screen center, 1 step = 1 pixel. X: more = right. Y: more = up. Applies to all crosshairs."),
+                 fg="#888888", bg=_bg, font=("Segoe UI", 9), wraplength=330, justify=tk.LEFT).pack(anchor="w", padx=30)
+        app_cfg = MACRO_CONFIG.setdefault("AppSettings", {})
+        pos_sliders = {}
+        pos_save = {"job": None}
+        def _save_pos_later():
+            # dragging fires many events: write config.json once, shortly after the last one
+            if pos_save["job"] is not None:
+                try: ui_root.after_cancel(pos_save["job"])
+                except Exception: pass
+            pos_save["job"] = ui_root.after(400, lambda: (pos_save.update(job=None), save_config()))
+        def add_pos_slider(label, key):
+            fr = tk.Frame(crosshair_content, bg=_bg); fr.pack(fill=tk.X, padx=30, pady=8)
+            tk.Label(fr, text=label, fg="#e8e8e8", bg=_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
+            cur = int(app_cfg.get(key, 100))
+            val_lbl = tk.Label(fr, text=str(cur), fg="#1db954", bg=_bg, font=("Segoe UI", 9, "bold"), width=4, anchor="e")
+            val_lbl.pack(side=tk.RIGHT, padx=(5, 0))
+            def _chg(v, k=key, lbl=val_lbl):
+                app_cfg[k] = int(round(float(v))); lbl.config(text=str(app_cfg[k]))
+                move_crosshair(); _save_pos_later()
+            sl = FluentSlider(fr, from_=0, to=200, value=cur, bg=_bg, command=_chg)
+            sl.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0))
+            pos_sliders[key] = (sl, val_lbl)
+        add_pos_slider(tr("Horizontal (X)"), "crosshair_x")
+        add_pos_slider(tr("Vertical (Y)"), "crosshair_y")
+        def reset_pos():
+            for k, (sl, lbl) in pos_sliders.items():
+                app_cfg[k] = 100
+                try: sl.set(100)
+                except Exception: pass
+                lbl.config(text="100")
+            move_crosshair(); save_config()
+        pos_reset_row = tk.Frame(crosshair_content, bg=_bg); pos_reset_row.pack(fill=tk.X, padx=30, pady=(0, 5))
+        RoundBtn(pos_reset_row, text="↺", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 12), borderwidth=0, cursor="hand2", command=reset_pos).pack(side=tk.RIGHT, ipadx=9, ipady=5)
 
         # --- сохранённые прицелы ---
         section(tr("Saved crosshairs"), top=20)
@@ -3295,7 +3608,35 @@ foreach ($k in @($found.Keys)) {
         crosshair_state["win"] = None
         crosshair_state["name"] = None
 
-    def show_crosshair(name):
+    def _btn_crosshair_pos(sc):
+        cr = (MACRO_CONFIG.get(str(sc), {}) or {}).get("Crosshair") or {} if sc is not None else {}
+        return int(cr.get("x", 100)), int(cr.get("y", 100))
+
+    def _crosshair_xy(l, t, r, b, sz, btn=(100, 100)):
+        """Top-left of the crosshair window. Each setting is 0..200 per axis, 100 = no shift, 1 step = 1 px.
+        X above 100 moves right, Y above 100 moves up.
+        The designer position (for all crosshairs) and the button's own position are added together."""
+        app = MACRO_CONFIG.get("AppSettings", {})
+        dx = (int(app.get("crosshair_x", 100)) - 100) + (int(btn[0]) - 100)
+        dy = (100 - int(app.get("crosshair_y", 100))) + (100 - int(btn[1]))
+        return l + (r - l - sz) // 2 + dx, t + (b - t - sz) // 2 + dy
+
+    def move_crosshair(btn=None):
+        """Moves the visible crosshair to the current position settings (live, while dragging a slider)."""
+        win = crosshair_state.get("win")
+        rect = crosshair_state.get("rect")
+        if win is None or rect is None: return
+        if btn is None: btn = _btn_crosshair_pos(crosshair_state.get("sc"))
+        x, y = _crosshair_xy(*rect, btn=btn)
+        try:
+            win.geometry(f"+{x}+{y}")
+            if crosshair_state.get("img") is not None:
+                hwnd = _cu.GetParent(win.winfo_id()) or win.winfo_id()
+                _layered_present(hwnd, crosshair_state["img"], x, y)
+        except Exception:
+            pass
+
+    def show_crosshair(name, sc=None):
         params = MACRO_CONFIG.get("Crosshairs", {}).get(name)
         if not params:
             show_osd(tr("Crosshair not found"))
@@ -3305,7 +3646,7 @@ foreach ($k in @($found.Keys)) {
         SZ = 200
         img = render_crosshair_image(base, size=SZ)
         l, t, r, b = _foreground_monitor_rect()
-        x, y = l + (r - l - SZ) // 2, t + (b - t - SZ) // 2
+        x, y = _crosshair_xy(l, t, r, b, SZ, btn=_btn_crosshair_pos(sc))
         win = tk.Toplevel(ui_root)
         win.overrideredirect(True)
         win.attributes("-topmost", True)
@@ -3313,12 +3654,16 @@ foreach ($k in @($found.Keys)) {
         win.update_idletasks()
         crosshair_state["win"] = win
         crosshair_state["name"] = name
+        crosshair_state["rect"] = (l, t, r, b, SZ)
+        crosshair_state["sc"] = sc
+        crosshair_state["img"] = None
         try:
             hwnd = _cu.GetParent(win.winfo_id()) or win.winfo_id()
             ex = _cu.GetWindowLongW(hwnd, -20)
             # LAYERED | TRANSPARENT (клики насквозь) | TOOLWINDOW | NOACTIVATE
             _cu.SetWindowLongW(hwnd, -20, ex | 0x00080000 | 0x00000020 | 0x00000080 | 0x08000000)
             if not _layered_present(hwnd, img, x, y): raise OSError("UpdateLayeredWindow")
+            crosshair_state["img"] = img
         except Exception:
             try:
                 key = "#010203"
@@ -3344,18 +3689,18 @@ foreach ($k in @($found.Keys)) {
             if is_second:
                 if crosshair_state["win"] is not None:
                     hide_crosshair(); show_osd(tr("Crosshair OFF"))
-                elif show_crosshair(names[idx]):
+                elif show_crosshair(names[idx], sc):
                     ch_idx[sc] = idx; show_osd(tr("Crosshair: {}").format(names[idx]))
             else:
                 idx = (idx + 1) % len(names)
                 ch_idx[sc] = idx
-                if crosshair_state["win"] is not None: show_crosshair(names[idx])
+                if crosshair_state["win"] is not None: show_crosshair(names[idx], sc)
                 show_osd(tr("Crosshair: {}").format(names[idx]))
         else:
             nm = cr.get("name") or next(iter(presets), "")
             if crosshair_state["win"] is not None and crosshair_state["name"] == nm:
                 hide_crosshair(); show_osd(tr("Crosshair OFF"))
-            elif show_crosshair(nm):
+            elif show_crosshair(nm, sc):
                 show_osd(tr("Crosshair: {}").format(nm))
 
     def set_extended_keyboard(on):
@@ -3369,6 +3714,49 @@ foreach ($k in @($found.Keys)) {
             if settings_bg_frame.winfo_ismapped(): settings_bg_frame.place_configure(x=ext_offset() + 14)
         except Exception: pass
         try: build_settings_screen()
+        except Exception: pass
+
+    def _hide_ext_banner(forever):
+        app = MACRO_CONFIG.setdefault("AppSettings", {})
+        if forever: app["ext_banner_hidden"] = True
+        else: ext_banner_state["session_hidden"] = True
+        save_config()
+        try: draw_numpad()
+        except Exception: pass
+
+    def on_ext_banner_close():
+        app = MACRO_CONFIG.setdefault("AppSettings", {})
+        if app.get("ext_banner_prompted"):
+            _hide_ext_banner(False)      # after the first time: ✕ just hides it until the next start
+            return
+        win = tk.Toplevel(ui_root)
+        win.title("Hide warning plate")
+        win.configure(bg="#111111")
+        win.transient(ui_root)
+        win.resizable(False, False)
+        forever = tk.BooleanVar(value=False)
+        def ok():
+            app["ext_banner_prompted"] = True
+            try: win.destroy()
+            except Exception: pass
+            _hide_ext_banner(bool(forever.get()))
+        def cancel():
+            try: win.destroy()
+            except Exception: pass
+        win.protocol("WM_DELETE_WINDOW", cancel)
+        btn_row = tk.Frame(win, bg="#111111")
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=24, pady=(10, 18))
+        RoundBtn(btn_row, text=tr("Cancel"), bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2", command=cancel).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5), ipady=6)
+        RoundBtn(btn_row, text=tr("Hide"), bg="#1db954", fg="#000000", font=("Segoe UI", 10, "bold"), borderwidth=0, cursor="hand2", command=ok).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0), ipady=6)
+        tk.Label(win, text=tr("Hide the warning plate?"), fg="#ffffff", bg="#111111", font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=24, pady=(20, 6))
+        tk.Label(win, text=tr("The plate reminds you that Extended keyboard is on. Without the tick it comes back after numbinder restarts."),
+                 fg="#cccccc", bg="#111111", font=("Segoe UI", 10), wraplength=360, justify=tk.LEFT).pack(anchor="w", padx=24)
+        tk.Checkbutton(win, text=tr("Hide it and don't show it again"), variable=forever, bg="#111111", fg="#e8e8e8",
+                       selectcolor="#2d2d2d", activebackground="#111111", activeforeground="#ffffff",
+                       font=("Segoe UI", 10), cursor="hand2", highlightthickness=0, bd=0).pack(anchor="w", padx=20, pady=(12, 2))
+        tk.Label(win, text=tr("You can show or hide it any time in Settings → Experimental."),
+                 fg="#888888", bg="#111111", font=("Segoe UI", 9), wraplength=360, justify=tk.LEFT).pack(anchor="w", padx=24)
+        try: win.grab_set()
         except Exception: pass
 
     def show_extended_warning():
@@ -3476,6 +3864,9 @@ foreach ($k in @($found.Keys)) {
         var_clean_keep.set(cfg.get("CleanKeep", ""))
         var_media.set(next((m[1] for m in MEDIA_KEYS if m[0] == cfg.get("MediaKey", "playpause")), MEDIA_KEYS[0][1]))
         _set_action_rows(_get_actions(cfg))
+        _pn = list(MACRO_CONFIG.get("Profiles", {}).keys())
+        cb_profile.config(values=[PROFILE_NEXT] + _pn)
+        var_profile_target.set(cfg.get("ProfileTarget") if cfg.get("ProfileTarget") in _pn else PROFILE_NEXT)
         var_mic_mode.set(next((m[1] for m in MIC_MODES if m[0] == cfg.get("MicMode", "toggle")), MIC_MODES[0][1]))
         var_admin_bool.set(True if cfg.get("AdminRights") == 1 else False)
         var_vol_dir.set("Up (+)" if cfg.get("VolumeDirection", 1) == 1 else "Down (-)")
@@ -3495,6 +3886,11 @@ foreach ($k in @($found.Keys)) {
         row_ch_name.winfo_children()[1].configure(values=ch_names)
         var_ch_name.set(cr.get("name") if cr.get("name") in ch_names else (ch_names[0] if ch_names else ""))
         ch_sel[:] = [n for n in cr.get("list", []) if n in ch_names]
+        var_ch_x.set(int(cr.get("x", 100))); var_ch_y.set(int(cr.get("y", 100)))
+        _t0 = str(cfg.get("Type", ""))
+        modrows_state["initial"] = cfg.get("ModRows") if isinstance(cfg.get("ModRows"), list) else None
+        modrows_state["initial_mid"] = _t0[4:] if _t0.startswith("mod:") else None
+        modrows_state["mid"] = None          # rebuilt for this button on the next refresh
         hotkey_list[:] = [str(k) for k in cfg.get("Hotkey", [])]
         
         opts = [tr("None")] + [SC_NAMES[k] for k in SC_NAMES if k != current_edit_sc and k not in LOCKED_SC and k in allowed_keys]
@@ -4186,6 +4582,252 @@ foreach ($k in @($found.Keys)) {
         except Exception:
             return set(), ""
 
+    # ================= ПРОФИЛИ =================
+    def profile_names():
+        return list(MACRO_CONFIG.get("Profiles", {}).keys())
+
+    def switch_profile(name, manual=True):
+        """manual=True: you chose it (it becomes the profile numbinder returns to).
+        manual=False: switched because of the app in front."""
+        if name not in MACRO_CONFIG.get("Profiles", {}): return
+        try:
+            if config_bg_frame.winfo_ismapped():      # a button is being edited: it would be saved into the wrong profile
+                if manual: show_osd("Close the button settings first")
+                return
+        except Exception:
+            pass
+        if manual: MACRO_CONFIG["BaseProfile"] = name
+        changed = _profile_swap(name)
+        if changed:
+            active_keys.clear()
+            for _sc, (_w, _l) in list(active_overlays.items()):
+                try: _w.destroy()
+                except Exception: pass
+            active_overlays.clear()
+            try: hide_crosshair()
+            except Exception: pass
+        try: save_config()
+        except Exception: pass
+        if changed:
+            try: draw_numpad()
+            except Exception: _runlog("draw_numpad after profile switch:\n" + traceback.format_exc())
+            if manual or MACRO_CONFIG["AppSettings"].get("profile_osd", True):
+                show_osd(f"▤ Profile: {name}")
+
+    def profile_button_action(target):
+        names = profile_names()
+        if target in names:
+            switch_profile(target, True)
+        elif len(names) > 1:
+            cur = MACRO_CONFIG.get("ActiveProfile")
+            i = names.index(cur) if cur in names else -1
+            switch_profile(names[(i + 1) % len(names)], True)
+        else:
+            show_osd("Only one profile. Add more: ▤ in the main window")
+
+    def _fg_exe():
+        try:
+            pid = wintypes.DWORD(0)
+            _cu.GetWindowThreadProcessId(_cu.GetForegroundWindow(), ctypes.byref(pid))
+            if not pid.value or pid.value == os.getpid(): return ""    # numbinder itself: change nothing
+            return psutil.Process(pid.value).name().lower()
+        except Exception:
+            return ""
+
+    def _profile_watch():
+        """Auto-switch: the app in front decides the profile; with no matching app, back to your own choice."""
+        while True:
+            time.sleep(0.7)
+            try:
+                rules = [(n, set(_split_apps(m.get("apps", "")))) for n, m in list(MACRO_CONFIG.get("ProfileMeta", {}).items())
+                         if isinstance(m, dict) and m.get("apps") and n in MACRO_CONFIG["Profiles"]]
+                active, base = MACRO_CONFIG.get("ActiveProfile"), MACRO_CONFIG.get("BaseProfile")
+                if not rules and active == base: continue
+                exe = _fg_exe()
+                if not exe: continue
+                target = next((n for n, apps in rules if exe in apps), base)
+                if target and target != active:
+                    ui_root.after(0, lambda t=target: switch_profile(t, manual=False))
+            except Exception:
+                pass
+
+    def _dark_menu():
+        return tk.Menu(ui_root, tearoff=0, bg="#1e1e1e", fg="#ffffff", activebackground="#1db954", activeforeground="#000000",
+                       disabledforeground="#777777", font=("Segoe UI", 10), bd=0)
+
+    def open_profile_menu():
+        m = _dark_menu()
+        active = MACRO_CONFIG.get("ActiveProfile")
+        for n in profile_names():
+            m.add_command(label=("●  " if n == active else "     ") + n, command=lambda n=n: switch_profile(n, True))
+        m.add_separator()
+        m.add_command(label="Manage profiles…", command=open_profile_manager)
+        x, y = ui_root.winfo_pointerxy()
+        try: m.tk_popup(x, y)
+        finally: m.grab_release()
+
+    def open_profile_manager():
+        _bg = MACRO_CONFIG.get("DevSettings", {}).get("theme_grad_bot", "#111111")
+        win = tk.Toplevel(ui_root)
+        win.title("Profiles")
+        win.configure(bg=_bg)
+        win.transient(ui_root)
+        win.resizable(False, False)
+        win.minsize(440, 0)
+        body = tk.Frame(win, bg=_bg)
+        body.pack(fill=tk.BOTH, expand=True)
+        keep = []
+
+        def ask_name(title, initial=""):
+            import tkinter.simpledialog as sd
+            n = sd.askstring(title, "Profile name:", initialvalue=initial, parent=win)
+            if n is None: return None
+            n = n.strip()[:24]
+            if not n: return None
+            if n in MACRO_CONFIG["Profiles"]:
+                messagebox.showinfo("Profiles", "A profile with this name already exists.", parent=win)
+                return None
+            return n
+
+        def small_btn(parent, text, cmd, bg="#2d2d2d", fg="#ffffff"):
+            RoundBtn(parent, text=text, bg=bg, fg=fg, font=("Segoe UI", 9), borderwidth=0, cursor="hand2",
+                     command=cmd).pack(side=tk.LEFT, padx=(0, 6), ipadx=6, ipady=3)
+
+        def do_switch(n):
+            switch_profile(n, True); build()
+
+        def do_rename(n):
+            new = ask_name("Rename profile", n)
+            if not new: return
+            for key in ("Profiles", "ProfileMeta"):
+                MACRO_CONFIG[key] = {(new if k == n else k): v for k, v in MACRO_CONFIG[key].items()}
+            for key in ("ActiveProfile", "BaseProfile"):
+                if MACRO_CONFIG.get(key) == n: MACRO_CONFIG[key] = new
+            save_config(); build()
+            try: draw_numpad()
+            except Exception: pass
+
+        def do_duplicate(n):
+            new, i = f"{n} copy"[:24], 2
+            while new in MACRO_CONFIG["Profiles"]:
+                new = f"{n} copy {i}"[:24]; i += 1
+            if n == MACRO_CONFIG["ActiveProfile"]:
+                data = {k: v for k, v in MACRO_CONFIG.items() if k.isdigit() and isinstance(v, dict)}
+            else:
+                data = MACRO_CONFIG["Profiles"].get(n) or {}
+            MACRO_CONFIG["Profiles"][new] = copy.deepcopy(data)
+            MACRO_CONFIG["ProfileMeta"][new] = {"apps": ""}
+            save_config(); build()
+
+        def do_new():
+            new = ask_name("New profile")
+            if not new: return
+            MACRO_CONFIG["Profiles"][new] = {}
+            MACRO_CONFIG["ProfileMeta"][new] = {"apps": ""}
+            save_config(); build()
+
+        def do_delete(n):
+            if len(MACRO_CONFIG["Profiles"]) < 2: return
+            if not messagebox.askyesno("Delete profile", f"Delete profile \"{n}\" with all its buttons?\nThis cannot be undone.", parent=win): return
+            if n == MACRO_CONFIG["ActiveProfile"]:
+                other = next(x for x in profile_names() if x != n)
+                switch_profile(other, True)
+                if MACRO_CONFIG["ActiveProfile"] == n: return       # could not switch (a button is being edited)
+            MACRO_CONFIG["Profiles"].pop(n, None)
+            MACRO_CONFIG["ProfileMeta"].pop(n, None)
+            if MACRO_CONFIG.get("BaseProfile") == n: MACRO_CONFIG["BaseProfile"] = MACRO_CONFIG["ActiveProfile"]
+            save_config(); build()
+
+        def build():
+            for w in body.winfo_children(): w.destroy()
+            keep.clear()
+            tk.Label(body, text="Profiles", fg="#ffffff", bg=_bg, font=("Segoe UI", 15, "bold")).pack(anchor="w", padx=30, pady=(18, 2))
+            tk.Label(body, text="A profile is a full set of buttons. Pick apps for a profile and it turns on by itself while one of "
+                                "them is in front; when you leave the app, numbinder returns to the profile you chose yourself.",
+                     fg="#aaaaaa", bg=_bg, font=("Segoe UI", 9), wraplength=380, justify=tk.LEFT).pack(anchor="w", padx=30)
+            active, many = MACRO_CONFIG.get("ActiveProfile"), len(MACRO_CONFIG["Profiles"]) > 1
+            for n in profile_names():
+                tk.Frame(body, bg="#333333", height=1).pack(fill=tk.X, padx=30, pady=(12, 8))
+                top = tk.Frame(body, bg=_bg); top.pack(fill=tk.X, padx=30)
+                tk.Label(top, text=n, fg="#ffffff", bg=_bg, font=("Segoe UI", 12, "bold")).pack(side=tk.LEFT)
+                if n == active:
+                    tk.Label(top, text="●  active", fg="#1db954", bg=_bg, font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=10)
+                btns = tk.Frame(body, bg=_bg); btns.pack(fill=tk.X, padx=30, pady=(6, 0))
+                if n != active: small_btn(btns, "Switch", lambda n=n: do_switch(n), bg="#1db954", fg="#000000")
+                small_btn(btns, "Rename", lambda n=n: do_rename(n))
+                small_btn(btns, "Duplicate", lambda n=n: do_duplicate(n))
+                if many: small_btn(btns, "Delete", lambda n=n: do_delete(n), bg="#4a2323", fg="#ff7b72")
+                v = tk.StringVar(value=(MACRO_CONFIG["ProfileMeta"].get(n) or {}).get("apps", ""))
+                keep.append(v)
+                create_app_row(body, "Auto-switch", v, multi=True, hover_text="Apps that turn this profile on.",
+                               ext_text="While one of these apps is in front, this profile is active. Leave it empty to switch only by hand.")
+                def _on_apps(*_a, n=n, v=v):
+                    MACRO_CONFIG["ProfileMeta"].setdefault(n, {})["apps"] = v.get()
+                    save_config()
+                v.trace_add("write", _on_apps)
+            tk.Frame(body, bg="#333333", height=1).pack(fill=tk.X, padx=30, pady=(12, 8))
+            RoundBtn(body, text="+ New profile", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2",
+                     command=do_new).pack(fill=tk.X, padx=30, ipady=5)
+            osd_row = tk.Frame(body, bg=_bg); osd_row.pack(fill=tk.X, padx=30, pady=(12, 0))
+            tk.Label(osd_row, text="Show a message on auto-switch", fg="#e8e8e8", bg=_bg, font=("Segoe UI", 10)).pack(side=tk.LEFT)
+            osd_var = tk.BooleanVar(value=MACRO_CONFIG["AppSettings"].get("profile_osd", True))
+            keep.append(osd_var)
+            def _on_osd():
+                MACRO_CONFIG["AppSettings"]["profile_osd"] = bool(osd_var.get()); save_config()
+            AnimatedSwitch(osd_row, osd_var, bg=_bg, command=_on_osd).pack(side=tk.RIGHT)
+            RoundBtn(body, text="Close", bg="#2d2d2d", fg="#ffffff", font=("Segoe UI", 10), borderwidth=0, cursor="hand2",
+                     command=win.destroy).pack(fill=tk.X, padx=30, pady=(12, 18), ipady=5)
+
+        build()
+
+    # ================= ПРАВЫЙ КЛИК ПО КНОПКЕ =================
+    btn_clip = {"cfg": None, "name": ""}
+
+    def _unlink_pair(sc):
+        partner = str((MACRO_CONFIG.get(sc) or {}).get("Pair", "-1"))
+        if partner in MACRO_CONFIG and isinstance(MACRO_CONFIG[partner], dict) and str(MACRO_CONFIG[partner].get("Pair")) == sc:
+            MACRO_CONFIG[partner]["Pair"] = "-1"
+
+    def btn_copy(sc):
+        btn_clip["cfg"] = copy.deepcopy(MACRO_CONFIG.get(sc) or MACRO_TEMPLATE)
+        btn_clip["name"] = SC_NAMES.get(sc, sc)
+        show_osd(f"Copied button {btn_clip['name']}")
+
+    def _btn_replace(sc, new):
+        _unlink_pair(sc)
+        if sc in active_overlays:
+            try: active_overlays.pop(sc)[0].destroy()
+            except Exception: pass
+        new["Pair"] = "-1"                 # a volume pair is a link between two keys: it is not copied
+        MACRO_CONFIG[sc] = new
+        save_config()
+        try: draw_numpad()
+        except Exception: pass
+
+    def btn_paste(sc):
+        if btn_clip["cfg"] is None: return
+        _btn_replace(sc, copy.deepcopy(btn_clip["cfg"]))
+        show_osd(f"Pasted {btn_clip['name']} → {SC_NAMES.get(sc, sc)}")
+
+    def btn_clear(sc):
+        _btn_replace(sc, copy.deepcopy(MACRO_TEMPLATE))
+
+    def on_canvas_right_click(e):
+        sc = _hit_button(e.x, e.y)
+        if sc is None or sc in LOCKED_SC: return
+        m = _dark_menu()
+        m.add_command(label=f"Button {SC_NAMES.get(sc, sc)}", state="disabled")
+        m.add_separator()
+        m.add_command(label="Edit", command=lambda: open_config_screen(sc))
+        m.add_command(label="Copy", command=lambda: btn_copy(sc))
+        m.add_command(label=f"Paste {btn_clip['name']}".strip(), command=lambda: btn_paste(sc),
+                      state="normal" if btn_clip["cfg"] is not None else "disabled")
+        m.add_command(label="Clear", command=lambda: btn_clear(sc))
+        try: m.tk_popup(e.x_root, e.y_root)
+        finally: m.grab_release()
+
+    canvas_numpad.bind("<Button-3>", on_canvas_right_click)
+
     def _get_endpoint_volume():
         from comtypes import CLSCTX_ALL
         from pycaw.pycaw import IAudioEndpointVolume
@@ -4404,6 +5046,8 @@ foreach ($k in @($found.Keys)) {
                         ctx.osd(f"✗ {ctx.module_id}: {e}")
                 threading.Thread(target=_run_module, daemon=True).start()
         elif t == "restart" and not is_second_action: restart_script()
+        elif t == "profile" and not is_second_action:
+            ui_root.after(0, lambda tg=cfg.get("ProfileTarget", ""): profile_button_action(tg))
         elif t == "media" and not is_second_action: _press_media_key(cfg.get("MediaKey", "playpause"))
         elif t == "overlay":
             if is_second_action: ui_root.after(0, lambda: open_overlay_settings(sc))
@@ -4614,6 +5258,8 @@ foreach ($k in @($found.Keys)) {
     show_osd(f"🚀 numbinder {VERSION}")
     ui_root.after(2000, _maybe_show_whats_new)
     ui_root.after(8000, _periodic_update_check)
+    ui_root.after(1500, _start_modules)
+    threading.Thread(target=_profile_watch, daemon=True, name="profiles").start()
     _runlog("mainloop start")
     _runlog(f"SOUND FILE: {_find_action_sound()}")
     ui_root.mainloop()

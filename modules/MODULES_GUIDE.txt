@@ -51,6 +51,43 @@ ctx.is_hold = True. Without "hold", the module runs only on a short press.
 The "description" in English is shown under the Type field in the button
 settings.
 
+PRESET LIST IN THE BUTTON SETTINGS (optional)
+A module can ask numbinder to show a list of rows with dropdowns in the
+button settings ("+ Add preset" adds a row, ✕ removes it):
+
+    MODULE["rows"] = {
+        "title": "Presets",                       # shown above the list
+        "hint": "Short explanation.",             # optional
+        "columns": [
+            {"key": "a", "label": "First",  "choices": ["One", "Two"], "width": 14},
+            {"key": "b", "label": "Second", "choices": ["X", "Y"],     "width": 12},
+        ],
+        "default": [{"a": "One", "b": "X"}],      # rows for a new button
+    }
+
+The saved rows reach run() as cfg["ModRows"], a list of dictionaries,
+for example [{"a": "One", "b": "X"}, {"a": "Two", "b": "Y"}].
+Each button has its own list. modules\eq_effects.py uses this.
+
+Column types ("type" in a column; "choice" when it is missing):
+    "choice"   dropdown, one of "choices"          -> a string
+    "multi"    several of "choices" at once         -> a list of strings
+               (click the field: a checkbox list opens; nothing ticked = [])
+    "entry"    the user types any text              -> a string
+               ("choices" is not used; "default" is the starting text)
+"width" is a hint for the field width; each row is shown as its own card.
+"item_label" (optional, next to "title") names the cards: "Preset 1", "Moment 2"...
+
+BACKGROUND WORK (optional)
+A module may also define start(ctx). numbinder calls it once, about 1.5 s after
+it starts, in a separate thread. Use it for work that must run without a key
+press, for example listening to a game. Keep any state in ctx.settings() so it
+survives restarts. modules\cs2_music.py (if you have it) is an example.
+
+    def start(ctx):
+        if ctx.settings().get("enabled"):
+            ...   # start your background thread here
+
 
 3. HELPERS (ctx)
 ----------------
